@@ -2,3 +2,5 @@
 *.db
 *.db-journal
 secret.env
+broker.lock
+broker.pid

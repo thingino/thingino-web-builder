@@ -220,6 +220,20 @@ fn admin_ok(headers: &HeaderMap, cfg: &Config) -> bool {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
+    // Singleton guard — refuse to start if another broker already holds the lock.
+    let lock_path = env_or("LOCK_PATH", "broker.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| anyhow::anyhow!("opening lock {lock_path}: {e}"))?;
+    if unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock_file), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        anyhow::bail!("another broker already holds {lock_path} — refusing to start a second instance");
+    }
+    std::mem::forget(lock_file); // hold the advisory lock for the whole process lifetime
+    let _ = std::fs::write(env_or("PID_PATH", "broker.pid"), std::process::id().to_string());
+    tracing::info!("singleton lock {lock_path} acquired, pid {}", std::process::id());
+
     let cfg = Config {
         github_token: std::env::var("GITHUB_TOKEN").map_err(|_| anyhow::anyhow!("GITHUB_TOKEN required"))?,
         github_repo: std::env::var("GITHUB_REPO").map_err(|_| anyhow::anyhow!("GITHUB_REPO required (owner/repo)"))?,
@@ -663,9 +677,11 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
         let slots = (st.cfg.max_concurrent - running.len() as i64).max(0);
         let to_dispatch: Vec<(String, String)> = if slots > 0 {
             let mut q = conn.prepare("SELECT id, defconfig FROM builds WHERE state='queued' ORDER BY created_ts ASC LIMIT ?1")?;
-            q.query_map([slots], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            let rows = q
+                .query_map([slots], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                 .filter_map(|x| x.ok())
-                .collect()
+                .collect::<Vec<_>>();
+            rows
         } else {
             vec![]
         };
@@ -750,9 +766,11 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
     let reap: Vec<(String, String, Option<i64>, i64)> = {
         let conn = st.db.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, state, run_id, finished_ts FROM builds WHERE state IN ('done','failed','cancelled') AND finished_ts IS NOT NULL")?;
-        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, i64>(3)?)))?
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, i64>(3)?)))?
             .filter_map(|x| x.ok())
-            .collect()
+            .collect::<Vec<_>>();
+        rows
     };
     for (id, state, run_id, finished_ts) in reap {
         let age = now_ts - finished_ts;
