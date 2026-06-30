@@ -88,6 +88,8 @@ const tok=()=>sessionStorage.getItem(TK)||'';
 const $=id=>document.getElementById(id);
 const short=s=>s?String(s).slice(0,8):'';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ipExpanded=new Set();
+const ipcell=(full,bucket)=>{ const f=full||'', b=bucket||full||''; return `<code class="ipc" data-full="${esc(f)}" data-bucket="${esc(b)}" style="cursor:pointer" title="click to toggle /64 subnet">${esc(ipExpanded.has(f)?b:f)}</code>`; };
 const tfmt=ts=>new Date(ts*1000).toLocaleTimeString();
 const dur=(a,b)=>{ if(!a||!b) return '—'; const s=b-a; return `${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`; };
 const ago=ts=>{ const s=Math.floor(Date.now()/1000)-ts; if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; };
@@ -123,8 +125,8 @@ async function refresh(){
   }
   const c=d.counts||{};
   $('tiles').innerHTML=[['running',c.running],['queued',c.queued],['done',c.done],['failed',c.failed],['cancelled',c.cancelled],['expired',c.expired],['24h',d.last24h],['avg build',d.avg_build_secs?Math.round(d.avg_build_secs/60)+'m':'—']].map(([l,n])=>tile(l,n)).join('');
-  $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${esc(short(b.build_id))}</code></td><td>${esc(b.defconfig)}</td><td>${pill(b.state)}</td><td><code>${esc(short(b.uid))}</code></td><td><code>${esc(b.ip)}</code></td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${esc(b.run_id)}</code></td></tr>`).join('');
-  $('events-body').innerHTML=(d.recent_events||[]).map(e=>`<tr><td>${tfmt(e.ts)}</td><td>${esc(e.kind)}</td><td><code>${esc(short(e.build_id))}</code></td><td><code>${esc(short(e.uid))}</code></td><td><code>${esc(e.ip)}</code></td><td class="muted">${esc(e.detail)}</td></tr>`).join('');
+  $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${esc(short(b.build_id))}</code></td><td>${esc(b.defconfig)}</td><td>${pill(b.state)}</td><td><code>${esc(short(b.uid))}</code></td><td>${ipcell(b.ip,b.ip_bucket)}</td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${esc(b.run_id)}</code></td></tr>`).join('');
+  $('events-body').innerHTML=(d.recent_events||[]).map(e=>`<tr><td>${tfmt(e.ts)}</td><td>${esc(e.kind)}</td><td><code>${esc(short(e.build_id))}</code></td><td><code>${esc(short(e.uid))}</code></td><td>${ipcell(e.ip,e.ip_bucket)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join('');
   $('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 async function toggle(){ await fetch(API+'/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
@@ -147,6 +149,8 @@ $('kill-btn').onclick=toggle;
 $('clearlogs-btn').onclick=clearLogs;
 $('resetlimits-btn').onclick=resetLimits;
 $('upd-btn').onclick=doUpdate;
+// Click an IP to toggle between the full address and its /64 (v4 /32) bucket.
+document.addEventListener('click',ev=>{ const c=ev.target.closest('.ipc'); if(!c) return; const f=c.dataset.full; if(ipExpanded.has(f)) ipExpanded.delete(f); else ipExpanded.add(f); c.textContent=ipExpanded.has(f)?c.dataset.bucket:c.dataset.full; });
 if(tok()){ adminGet().then(show).catch(()=>sessionStorage.removeItem(TK)); }
 setInterval(()=>{ if($('app').style.display!=='none') refresh(); },5000);
 </script>

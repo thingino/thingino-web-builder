@@ -81,9 +81,9 @@ const getSetting = async (env, key) => {
 const setSetting = (env, key, value) =>
   env.DB.prepare("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
     .bind(key, value).run();
-const logEvent = (env, kind, build_id, uid, ip, detail) =>
-  env.DB.prepare("INSERT INTO events(ts,kind,build_id,uid,ip_bucket,detail) VALUES(?,?,?,?,?,?)")
-    .bind(nowSec(), kind, build_id || null, uid || null, ip || null, detail || "").run();
+const logEvent = (env, kind, build_id, uid, ip, detail, ipFull) =>
+  env.DB.prepare("INSERT INTO events(ts,kind,build_id,uid,ip_bucket,ip_full,detail) VALUES(?,?,?,?,?,?,?)")
+    .bind(nowSec(), kind, build_id || null, uid || null, ip || null, ipFull || null, detail || "").run();
 
 // ---- GitHub ---------------------------------------------------------------
 function ghHeaders(env, auth) {
@@ -168,7 +168,8 @@ async function handleBuild(request, env) {
   if (!list.includes(defconfig)) return json({ error: "unknown defconfig" }, 400, env);
 
   const uid = resolveUid(request);
-  const ip = ipBucket(request.headers.get("CF-Connecting-IP"));
+  const rawIp = request.headers.get("CF-Connecting-IP") || "";
+  const ip = ipBucket(rawIp);
   const ts = nowSec(), cfg = limits(env);
   // Hourly window, but never count builds from before an admin "reset limits".
   const resetTs = parseInt((await getSetting(env, "limits_reset_ts")) || "0", 10);
@@ -187,7 +188,7 @@ async function handleBuild(request, env) {
        ORDER BY created_ts DESC LIMIT 1`
     ).bind(defconfig, commit, ts - cfg.retention).first();
     if (e) {
-      await logEvent(env, "dedup", e.id, uid, ip, `reused ${e.state} for ${defconfig}`);
+      await logEvent(env, "dedup", e.id, uid, ip, `reused ${e.state} for ${defconfig}`, rawIp);
       const st = e.state === "running" && e.cancel_requested ? "cancelling" : e.state;
       return json({
         build_id: e.id, defconfig, state: st, deduped: true,
@@ -202,22 +203,22 @@ async function handleBuild(request, env) {
 
   const notCancelledUndispatched = "NOT (state='cancelled' AND dispatched_ts IS NULL)";
   if ((await countQ(env, `SELECT count(*) c FROM builds WHERE created_ts > ? AND ${notCancelledUndispatched}`, cutoff)) >= cfg.globalHourly) {
-    await logEvent(env, "rate_limited", null, uid, ip, "global hourly limit");
+    await logEvent(env, "rate_limited", null, uid, ip, "global hourly limit", rawIp);
     return json({ error: `the builder is at its hourly limit (${cfg.globalHourly}/hr) — try again later` }, 429, env);
   }
   if ((await countQ(env, `SELECT count(*) c FROM builds WHERE uid=? AND created_ts > ? AND ${notCancelledUndispatched}`, uid, cutoff)) >= cfg.userHourly) {
-    await logEvent(env, "rate_limited", null, uid, ip, "per-user hourly limit");
+    await logEvent(env, "rate_limited", null, uid, ip, "per-user hourly limit", rawIp);
     return json({ error: `you've reached ${cfg.userHourly} builds this hour — try again later` }, 429, env);
   }
   if ((await countQ(env, `SELECT count(*) c FROM builds WHERE ip_bucket=? AND created_ts > ? AND ${notCancelledUndispatched}`, ip, cutoff)) >= cfg.ipHourly) {
-    await logEvent(env, "rate_limited", null, uid, ip, "per-ip hourly limit");
+    await logEvent(env, "rate_limited", null, uid, ip, "per-ip hourly limit", rawIp);
     return json({ error: "too many builds from your network this hour — try again later" }, 429, env);
   }
 
   const id = uuid();
-  await env.DB.prepare("INSERT INTO builds(id,uid,ip_bucket,defconfig,state,created_ts,commit_sha) VALUES(?,?,?,?,'queued',?,?)")
-    .bind(id, uid, ip, defconfig, ts, commit).run();
-  await logEvent(env, "queued", id, uid, ip, defconfig);
+  await env.DB.prepare("INSERT INTO builds(id,uid,ip_bucket,ip_full,defconfig,state,created_ts,commit_sha) VALUES(?,?,?,?,?,'queued',?,?)")
+    .bind(id, uid, ip, rawIp, defconfig, ts, commit).run();
+  await logEvent(env, "queued", id, uid, ip, defconfig, rawIp);
 
   // Inline dispatch: if a slot is free, fire the build NOW rather than waiting for
   // the next cron tick. The cron is only a fallback/reconciler for the rest.
@@ -459,22 +460,23 @@ async function sessionOk(request, env) {
 async function handleAdminLogin(request, env) {
   let body;
   try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
-  const ip = ipBucket(request.headers.get("CF-Connecting-IP"));
+  const rawIp = request.headers.get("CF-Connecting-IP") || "";
+  const ip = ipBucket(rawIp);
   const fails = await countQ(env, "SELECT count(*) c FROM events WHERE kind='admin_login_fail' AND ip_bucket=? AND ts > ?", ip, nowSec() - 900);
   if (fails >= 10) {
-    await logEvent(env, "admin_login_throttled", null, null, ip, "too many failed logins");
+    await logEvent(env, "admin_login_throttled", null, null, ip, "too many failed logins", rawIp);
     return json({ error: "too many attempts — try again later" }, 429, env);
   }
   if (!env.ADMIN_TOKEN) return json({ error: "admin is disabled" }, 503, env);
   if (!env.ADMIN_TOTP_SECRET) return json({ error: "admin 2FA is not configured" }, 503, env);
   const ok = ctEq(String(body.token || ""), env.ADMIN_TOKEN) && (await totpCheck(env.ADMIN_TOTP_SECRET, String(body.totp || "").trim()));
   if (!ok) {
-    await logEvent(env, "admin_login_fail", null, null, ip, "bad token or 2FA");
+    await logEvent(env, "admin_login_fail", null, null, ip, "bad token or 2FA", rawIp);
     return json({ error: "invalid credentials" }, 401, env);
   }
   const session = uuid(), ttl = 8 * 3600;
   await env.DB.prepare("INSERT INTO sessions(token,expires) VALUES(?,?)").bind(session, nowSec() + ttl).run();
-  await logEvent(env, "admin_login_ok", null, null, ip, "session created");
+  await logEvent(env, "admin_login_ok", null, null, ip, "session created", rawIp);
   return json({ session, expires_in: ttl, totp: true }, 200, env);
 }
 async function handleAdminLogout(request, env) {
@@ -489,13 +491,15 @@ async function handleAdminStats(request, env) {
   for (const s of ["queued", "running", "done", "failed", "cancelled", "expired"])
     counts[s] = await countQ(env, "SELECT count(*) c FROM builds WHERE state=?", s);
   const avg = await env.DB.prepare("SELECT avg(finished_ts - dispatched_ts) a FROM builds WHERE state='done' AND finished_ts IS NOT NULL AND dispatched_ts IS NOT NULL").first();
-  const builds = ((await env.DB.prepare("SELECT id,defconfig,state,created_ts,dispatched_ts,finished_ts,run_id,cancel_requested,uid,ip_bucket FROM builds ORDER BY created_ts DESC LIMIT 25").all()).results || []).map((b) => ({
+  const builds = ((await env.DB.prepare("SELECT id,defconfig,state,created_ts,dispatched_ts,finished_ts,run_id,cancel_requested,uid,ip_bucket,ip_full FROM builds ORDER BY created_ts DESC LIMIT 25").all()).results || []).map((b) => ({
     build_id: b.id, defconfig: b.defconfig,
     state: b.state === "running" && b.cancel_requested ? "cancelling" : b.state,
-    created_ts: b.created_ts, dispatched_ts: b.dispatched_ts, finished_ts: b.finished_ts, run_id: b.run_id, uid: b.uid, ip: b.ip_bucket,
+    created_ts: b.created_ts, dispatched_ts: b.dispatched_ts, finished_ts: b.finished_ts, run_id: b.run_id, uid: b.uid,
+    ip: b.ip_full || b.ip_bucket, ip_bucket: b.ip_bucket,
   }));
-  const events = ((await env.DB.prepare("SELECT ts,kind,build_id,detail,uid,ip_bucket FROM events ORDER BY id DESC LIMIT 60").all()).results || []).map((e) => ({
-    ts: e.ts, kind: e.kind, build_id: e.build_id, detail: e.detail, uid: e.uid, ip: e.ip_bucket,
+  const events = ((await env.DB.prepare("SELECT ts,kind,build_id,detail,uid,ip_bucket,ip_full FROM events ORDER BY id DESC LIMIT 60").all()).results || []).map((e) => ({
+    ts: e.ts, kind: e.kind, build_id: e.build_id, detail: e.detail, uid: e.uid,
+    ip: e.ip_full || e.ip_bucket, ip_bucket: e.ip_bucket,
   }));
   return json({
     builds_enabled: (await getSetting(env, "builds_enabled")) !== "0",
