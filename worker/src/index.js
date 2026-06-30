@@ -20,9 +20,9 @@ const uuid = () => crypto.randomUUID();
 const validUid = (s) => typeof s === "string" && /^[a-zA-Z0-9-]{8,64}$/.test(s);
 const validBuildId = (s) => typeof s === "string" && /^[a-f0-9-]{8,40}$/.test(s);
 
-function limits(env) {
+async function limits(env) {
   const n = (k, d) => parseInt(env[k] || "", 10) || d;
-  return {
+  const base = {
     userHourly: n("PER_USER_HOURLY_LIMIT", 2),
     ipHourly: n("PER_IP_HOURLY_LIMIT", 3),
     globalHourly: n("GLOBAL_HOURLY_LIMIT", 20),
@@ -32,6 +32,10 @@ function limits(env) {
     failedRetention: n("FAILED_RETENTION_SECS", 3600),
     buildTimeout: n("BUILD_TIMEOUT_SECS", 5400),
   };
+  // Runtime overrides set from the admin UI (D1 settings), layered over the vars.
+  const ov = await getSetting(env, "limits");
+  if (ov) { try { Object.assign(base, JSON.parse(ov)); } catch (_) {} }
+  return base;
 }
 
 const assetUrl = (env, id) =>
@@ -149,7 +153,7 @@ async function handleDefconfigs(env) {
 async function handleStats(request, env) {
   const uid = resolveUid(request);
   const { commit } = await resolveThingino(env);
-  const cfg = limits(env);
+  const cfg = await limits(env);
   return json({
     running: await countQ(env, "SELECT count(*) c FROM builds WHERE state='running'"),
     queued: await countQ(env, "SELECT count(*) c FROM builds WHERE state='queued'"),
@@ -170,7 +174,7 @@ async function handleBuild(request, env) {
   const uid = resolveUid(request);
   const rawIp = request.headers.get("CF-Connecting-IP") || "";
   const ip = ipBucket(rawIp);
-  const ts = nowSec(), cfg = limits(env);
+  const ts = nowSec(), cfg = await limits(env);
   // Hourly window, but never count builds from before an admin "reset limits".
   const resetTs = parseInt((await getSetting(env, "limits_reset_ts")) || "0", 10);
   const cutoff = Math.max(ts - WINDOW, resetTs);
@@ -353,7 +357,7 @@ async function deleteReleaseAssets(env, id) {
 }
 
 async function schedulerStep(env) {
-  const ts = nowSec(), cfg = limits(env);
+  const ts = nowSec(), cfg = await limits(env);
   await resolveThingino(env);
 
   const running = ((await env.DB.prepare("SELECT id,run_id,dispatched_ts,cancel_requested FROM builds WHERE state='running'").all()).results) || [];
@@ -512,7 +516,7 @@ async function handleAdminLogout(request, env) {
 }
 async function handleAdminStats(request, env) {
   if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
-  const cfg = limits(env);
+  const cfg = await limits(env);
   const counts = {};
   for (const s of ["queued", "running", "done", "failed", "cancelled", "expired"])
     counts[s] = await countQ(env, "SELECT count(*) c FROM builds WHERE state=?", s);
@@ -533,6 +537,7 @@ async function handleAdminStats(request, env) {
     last24h: await countQ(env, "SELECT count(*) c FROM builds WHERE created_ts > ?", nowSec() - DAY),
     avg_build_secs: avg && avg.a ? Math.round(avg.a) : null,
     max_concurrent: cfg.maxConcurrent, retention_secs: cfg.retention,
+    limits: { userHourly: cfg.userHourly, ipHourly: cfg.ipHourly, globalHourly: cfg.globalHourly, maxConcurrent: cfg.maxConcurrent, maxQueue: cfg.maxQueue, retention: cfg.retention },
     recent_builds: builds, recent_events: events,
     version: env.VERSION || "v0.1.0", latest_version: null, update_available: false,
   }, 200, env);
@@ -559,6 +564,21 @@ async function handleAdminResetLimits(request, env) {
   await logEvent(env, "admin_reset_limits", null, null, null, "hourly limits reset");
   return json({ ok: true }, 200, env);
 }
+// Set runtime limit overrides (stored in D1; layered over the wrangler.toml vars).
+async function handleAdminLimits(request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
+  const cur = await limits(env);
+  const next = {};
+  for (const k of ["userHourly", "ipHourly", "globalHourly", "maxConcurrent", "maxQueue", "retention"]) {
+    const v = parseInt(body[k], 10);
+    next[k] = Number.isFinite(v) && v > 0 && v <= 100000 ? v : cur[k];
+  }
+  await setSetting(env, "limits", JSON.stringify(next));
+  await logEvent(env, "admin_limits", null, null, null, JSON.stringify(next));
+  return json({ ok: true, limits: next }, 200, env);
+}
 
 // ---- entrypoints ----------------------------------------------------------
 export default {
@@ -580,6 +600,7 @@ export default {
       if (p === "/api/admin/toggle" && request.method === "POST") return await handleAdminToggle(request, env);
       if (p === "/api/admin/clear-logs" && request.method === "POST") return await handleAdminClearLogs(request, env);
       if (p === "/api/admin/reset-limits" && request.method === "POST") return await handleAdminResetLimits(request, env);
+      if (p === "/api/admin/limits" && request.method === "POST") return await handleAdminLimits(request, env);
       if (p === "/api/admin/logout" && request.method === "POST") return await handleAdminLogout(request, env);
       return json({ error: "not found" }, 404, env);
     } catch (e) {

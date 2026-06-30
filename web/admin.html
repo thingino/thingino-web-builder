@@ -58,6 +58,22 @@
     <span class="small muted ms-auto" id="upd-extra"></span>
   </div></div>
 
+  <div class="card mb-3"><div class="card-body">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <span class="small muted text-uppercase">Limits</span>
+      <button id="limits-save" class="btn btn-sm btn-thingino ms-auto">Save</button>
+      <span class="small muted" id="limits-msg"></span>
+    </div>
+    <div class="row g-2">
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-user/hr</label><input id="lim-userHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-IP/hr</label><input id="lim-ipHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">global/hr</label><input id="lim-globalHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">concurrent</label><input id="lim-maxConcurrent" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">queue</label><input id="lim-maxQueue" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">retention (min)</label><input id="lim-retention" type="number" min="1" class="form-control form-control-sm"></div>
+    </div>
+  </div></div>
+
   <div class="row g-2 mb-3" id="tiles"></div>
 
   <div class="card mb-3">
@@ -127,6 +143,7 @@ async function refresh(){
     $('upd-badge').innerHTML=d.latest_version?'<span class="text-success small ms-1">up to date</span>':'';
     $('upd-btn').style.display='none';
   }
+  renderLimits(d.limits);
   const c=d.counts||{};
   $('tiles').innerHTML=[['running',c.running],['queued',c.queued],['done',c.done],['failed',c.failed],['cancelled',c.cancelled],['expired',c.expired],['24h',d.last24h],['avg build',d.avg_build_secs?Math.round(d.avg_build_secs/60)+'m':'—']].map(([l,n])=>tile(l,n)).join('');
   $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${esc(short(b.build_id))}</code></td><td>${esc(b.defconfig)}</td><td>${pill(b.state)}${buildAction(b)}</td><td><code>${esc(short(b.uid))}</code></td><td>${ipcell(b.ip,b.ip_bucket)}</td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${esc(b.run_id)}</code></td></tr>`).join('');
@@ -136,6 +153,18 @@ async function refresh(){
 async function toggle(){ await fetch(API+'/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
 async function clearLogs(){ if(!confirm('Delete all audit events?')) return; await fetch(API+'/api/admin/clear-logs',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); refresh(); }
 async function resetLimits(){ if(!confirm('Reset all hourly rate-limit counts?')) return; const r=await fetch(API+'/api/admin/reset-limits',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); if(r.ok) $('kill-extra').textContent='hourly limits reset'; refresh(); }
+let limitsInit=false;
+function renderLimits(L){ if(!L||limitsInit) return;
+  $('lim-userHourly').value=L.userHourly; $('lim-ipHourly').value=L.ipHourly; $('lim-globalHourly').value=L.globalHourly;
+  $('lim-maxConcurrent').value=L.maxConcurrent; $('lim-maxQueue').value=L.maxQueue; $('lim-retention').value=Math.round(L.retention/60);
+  limitsInit=true; }
+async function saveLimits(){
+  const v=id=>parseInt($(id).value,10);
+  const body={userHourly:v('lim-userHourly'),ipHourly:v('lim-ipHourly'),globalHourly:v('lim-globalHourly'),maxConcurrent:v('lim-maxConcurrent'),maxQueue:v('lim-maxQueue'),retention:Math.max(60,v('lim-retention')*60)};
+  $('limits-msg').textContent='saving…';
+  try{ const r=await fetch(API+'/api/admin/limits',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify(body)}); const j=await r.json().catch(()=>({})); $('limits-msg').textContent=r.ok?'saved ✓':(j.error||'failed'); if(r.ok) limitsInit=false; }
+  catch{ $('limits-msg').textContent='failed'; }
+  refresh(); }
 async function doUpdate(){
   const v=$('upd-btn').dataset.v||'';
   if(!confirm('Update the builder'+(v?' to '+v:'')+' and restart? In-progress builds keep running on GitHub.')) return;
@@ -152,6 +181,7 @@ $('logout').onclick=logout;
 $('kill-btn').onclick=toggle;
 $('clearlogs-btn').onclick=clearLogs;
 $('resetlimits-btn').onclick=resetLimits;
+$('limits-save').onclick=saveLimits;
 $('upd-btn').onclick=doUpdate;
 // Click an IP to toggle between the full address and its /64 (v4 /32) bucket.
 document.addEventListener('click',ev=>{ const c=ev.target.closest('.ipc'); if(!c) return; const f=c.dataset.full; if(ipExpanded.has(f)) ipExpanded.delete(f); else ipExpanded.add(f); c.textContent=ipExpanded.has(f)?c.dataset.bucket:c.dataset.full; });
