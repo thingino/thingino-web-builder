@@ -31,7 +31,7 @@
   .pill{padding:1px 8px;border-radius:20px;font-size:11px;font-weight:650;}
   .s-queued{background:#22303c;color:#8fc7ff;} .s-running{background:#243b27;color:var(--accent);}
   .s-done{background:#1f3a24;color:var(--accent);} .s-failed{background:#3a2020;color:var(--danger);}
-  .s-cancelled{background:#3a3320;color:var(--warn);} .s-expired{background:#262b30;color:var(--muted);}
+  .s-cancelled{background:#3a3320;color:var(--warn);} .s-cancelling{background:#33402a;color:var(--warn);} .s-expired{background:#262b30;color:var(--muted);}
   .scroll{max-height:280px;overflow:auto;border:1px solid var(--border);border-radius:10px;}
   .muted{color:var(--muted);}
 </style>
@@ -61,12 +61,12 @@
 
   <h2>Recent builds</h2>
   <div class="scroll"><table id="builds"><thead><tr>
-    <th class="mono">build</th><th>defconfig</th><th>state</th><th>created</th><th>duration</th><th class="mono">run</th>
+    <th class="mono">build</th><th>defconfig</th><th>state</th><th class="mono">user</th><th class="mono">ip</th><th>created</th><th>duration</th><th class="mono">run</th>
   </tr></thead><tbody></tbody></table></div>
 
   <h2>Recent events</h2>
   <div class="scroll"><table id="events"><thead><tr>
-    <th>time</th><th>kind</th><th class="mono">build</th><th>detail</th>
+    <th>time</th><th>kind</th><th class="mono">build</th><th class="mono">user</th><th class="mono">ip</th><th>detail</th>
   </tr></thead><tbody></tbody></table></div>
 </div>
 
@@ -109,11 +109,13 @@ async function refresh(){
   $('builds').tBodies[0].innerHTML=(d.recent_builds||[]).map(b=>`<tr>
     <td class="mono">${short(b.build_id)}</td><td>${b.defconfig}</td>
     <td><span class="pill s-${b.state}">${b.state}</span></td>
+    <td class="mono">${short(b.uid)}</td><td class="mono">${b.ip||''}</td>
     <td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td>
     <td class="mono">${b.run_id||''}</td></tr>`).join('');
 
   $('events').tBodies[0].innerHTML=(d.recent_events||[]).map(e=>`<tr>
     <td>${tfmt(e.ts)}</td><td>${e.kind}</td><td class="mono">${short(e.build_id)}</td>
+    <td class="mono">${short(e.uid)}</td><td class="mono">${e.ip||''}</td>
     <td class="muted">${(e.detail||'').replace(/</g,'&lt;')}</td></tr>`).join('');
 
   $('updated').textContent='updated '+new Date().toLocaleTimeString();

@@ -449,14 +449,17 @@ async fn get_status(State(st): State<AppState>, Path(build_id): Path<String>) ->
     let conn = st.db.lock().unwrap();
     let row = conn
         .query_row(
-            "SELECT defconfig, state, created_ts, dispatched_ts, finished_ts FROM builds WHERE id=?1",
+            "SELECT defconfig, state, created_ts, dispatched_ts, finished_ts, cancel_requested FROM builds WHERE id=?1",
             [&build_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<i64>>(4)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<i64>>(4)?, r.get::<_, i64>(5)?)),
         )
         .optional().ok().flatten();
-    let Some((defconfig, state, created_ts, dispatched_ts, finished_ts)) = row else {
+    let Some((defconfig, real_state, created_ts, dispatched_ts, finished_ts, cancel_req)) = row else {
         return json_err(StatusCode::NOT_FOUND, "unknown build");
     };
+    // A running build with a pending cancel surfaces as "cancelling" — persisted via
+    // cancel_requested, so it survives reloads until the run actually stops.
+    let state = if real_state == "running" && cancel_req != 0 { "cancelling".to_string() } else { real_state };
     let position: i64 = if state == "queued" {
         conn.query_row("SELECT count(*) FROM builds WHERE state='queued' AND created_ts <= ?1", [created_ts], |r| r.get(0)).unwrap_or(1)
     } else {
@@ -464,7 +467,7 @@ async fn get_status(State(st): State<AppState>, Path(build_id): Path<String>) ->
     };
     drop(conn);
     let elapsed = match state.as_str() {
-        "running" => dispatched_ts.map(|d| now_ts - d).unwrap_or(0),
+        "running" | "cancelling" => dispatched_ts.map(|d| now_ts - d).unwrap_or(0),
         "queued" => now_ts - created_ts,
         _ => match (finished_ts, dispatched_ts) {
             (Some(f), Some(d)) => f - d,
@@ -564,20 +567,21 @@ async fn admin_toggle(State(st): State<AppState>, headers: HeaderMap, Json(body)
 // ---- query helpers --------------------------------------------------------
 
 fn latest_user_build(conn: &Connection, cfg: &Config, uid: &str, now_ts: i64) -> Option<serde_json::Value> {
-    let (id, defconfig, state, created_ts, dispatched_ts, finished_ts) = conn
+    let (id, defconfig, real_state, created_ts, dispatched_ts, finished_ts, cancel_req) = conn
         .query_row(
-            "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts FROM builds WHERE uid=?1 ORDER BY created_ts DESC LIMIT 1",
+            "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts, cancel_requested FROM builds WHERE uid=?1 ORDER BY created_ts DESC LIMIT 1",
             [uid],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<i64>>(4)?, r.get::<_, Option<i64>>(5)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<i64>>(4)?, r.get::<_, Option<i64>>(5)?, r.get::<_, i64>(6)?)),
         )
         .optional().ok().flatten()?;
+    let state = if real_state == "running" && cancel_req != 0 { "cancelling".to_string() } else { real_state };
     let position: i64 = if state == "queued" {
         conn.query_row("SELECT count(*) FROM builds WHERE state='queued' AND created_ts <= ?1", [created_ts], |r| r.get(0)).unwrap_or(1)
     } else {
         0
     };
     let elapsed = match state.as_str() {
-        "running" => dispatched_ts.map(|d| now_ts - d).unwrap_or(0),
+        "running" | "cancelling" => dispatched_ts.map(|d| now_ts - d).unwrap_or(0),
         "queued" => now_ts - created_ts,
         _ => match (finished_ts, dispatched_ts) {
             (Some(f), Some(d)) => f - d,
@@ -596,19 +600,24 @@ fn latest_user_build(conn: &Connection, cfg: &Config, uid: &str, now_ts: i64) ->
 
 fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts, run_id FROM builds ORDER BY created_ts DESC LIMIT ?1",
+        "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts, run_id, cancel_requested, uid, ip_bucket FROM builds ORDER BY created_ts DESC LIMIT ?1",
     ) else {
         return vec![];
     };
     let it = stmt.query_map([limit], |r| {
+        let real_state: String = r.get(2)?;
+        let cancel_req: i64 = r.get(7)?;
+        let state = if real_state == "running" && cancel_req != 0 { "cancelling".to_string() } else { real_state };
         Ok(json!({
             "build_id": r.get::<_, String>(0)?,
             "defconfig": r.get::<_, String>(1)?,
-            "state": r.get::<_, String>(2)?,
+            "state": state,
             "created_ts": r.get::<_, i64>(3)?,
             "dispatched_ts": r.get::<_, Option<i64>>(4)?,
             "finished_ts": r.get::<_, Option<i64>>(5)?,
             "run_id": r.get::<_, Option<i64>>(6)?,
+            "uid": r.get::<_, String>(8)?,
+            "ip": r.get::<_, String>(9)?,
         }))
     });
     match it {
@@ -618,7 +627,7 @@ fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> 
 }
 
 fn query_recent_events(conn: &Connection, limit: i64) -> Vec<serde_json::Value> {
-    let Ok(mut stmt) = conn.prepare("SELECT ts, kind, build_id, detail FROM events ORDER BY id DESC LIMIT ?1") else {
+    let Ok(mut stmt) = conn.prepare("SELECT ts, kind, build_id, detail, uid, ip_bucket FROM events ORDER BY id DESC LIMIT ?1") else {
         return vec![];
     };
     let it = stmt.query_map([limit], |r| {
@@ -627,6 +636,8 @@ fn query_recent_events(conn: &Connection, limit: i64) -> Vec<serde_json::Value> 
             "kind": r.get::<_, String>(1)?,
             "build_id": r.get::<_, Option<String>>(2)?,
             "detail": r.get::<_, String>(3)?,
+            "uid": r.get::<_, Option<String>>(4)?,
+            "ip": r.get::<_, Option<String>>(5)?,
         }))
     });
     match it {
@@ -698,12 +709,22 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
             .find(|r| run_id_opt.map(|rid| rid == r.run_id).unwrap_or(false) || r.name.contains(id.as_str()));
 
         if *cancel_req {
-            if let Some(r) = matched {
-                let _ = cancel_run(st, r.run_id).await;
+            // Stay in 'cancelling' until the run actually stops; only then finalize.
+            match matched {
+                Some(r) if r.status == "completed" => {
+                    let conn = st.db.lock().unwrap();
+                    conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
+                    log_event(&conn, "cancelled", Some(id), None, None, "run stopped after cancel");
+                }
+                Some(r) => {
+                    let _ = cancel_run(st, r.run_id).await; // run still active — (re)request cancellation
+                }
+                None => {
+                    let conn = st.db.lock().unwrap();
+                    conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
+                    log_event(&conn, "cancelled", Some(id), None, None, "cancelled (run not found)");
+                }
             }
-            let conn = st.db.lock().unwrap();
-            conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
-            log_event(&conn, "cancelled", Some(id), None, None, "cancelled while running");
             continue;
         }
 

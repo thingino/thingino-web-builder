@@ -158,7 +158,7 @@ function renderGlobal(d){
   else banner.classList.remove('show');
 }
 
-const ACTIVE=new Set(['queued','running']);
+const ACTIVE=new Set(['queued','running','cancelling']);
 function renderYou(){
   if(!you){ mybuild.classList.remove('show'); picker.style.display=''; return; }
   picker.style.display = ACTIVE.has(you.state) ? 'none' : '';
@@ -177,6 +177,11 @@ function renderYou(){
     icon.innerHTML='<span class="spinner"></span>';
     title.textContent=`Building… ${fmt(liveElapsed)}`;
     actions.innerHTML='<button class="ghost" id="cancel">Cancel</button>';
+  } else if(you.state==='cancelling'){
+    head.classList.add('warn');
+    icon.innerHTML='<span class="spinner"></span>';
+    title.textContent='Cancelling…';
+    meta.innerHTML += '<br><span style="color:var(--warn)">stopping the build — this can take a moment</span>';
   } else if(you.state==='done'){
     head.classList.add('ok'); title.textContent='✅ Build ready';
     actions.innerHTML=`<a class="dl" href="${you.download_url}" download>Download firmware (.bin)</a><button class="ghost" id="again">Build another</button>`;
@@ -221,7 +226,8 @@ async function submit(){
 async function cancelBuild(){
   if(!you) return;
   const btn=$('cancel'); if(btn){ btn.disabled=true; btn.textContent='Cancelling…'; }
-  await api(`/api/cancel/${you.build_id}`,{method:'POST'});
+  const {data}=await api(`/api/cancel/${you.build_id}`,{method:'POST'});
+  if(data && data.state){ you.state = (data.state==='cancelled') ? 'cancelled' : 'cancelling'; youAt=Date.now(); renderYou(); }
   refresh();
 }
 
