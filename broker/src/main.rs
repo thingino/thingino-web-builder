@@ -367,15 +367,19 @@ fn hotp(secret: &[u8], counter: u64) -> u32 {
     bin % 1_000_000
 }
 
-/// Validate a 6-digit code against the base32 secret, accepting the current step ±1.
-fn totp_check(secret_b32: &str, code: &str) -> bool {
+/// Validate a 6-digit code against the base32 secret, accepting the current 30s step ±1,
+/// and return the matching step (step-1, step, or step+1) — or None if it doesn't match.
+/// The step lets callers enforce single-use (anti-replay): accept only a strictly newer
+/// step than the last one recorded for that identity, so a code can't be reused inside its
+/// ±90s acceptance window.
+fn totp_step(secret_b32: &str, code: &str) -> Option<u64> {
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        return false;
+        return None;
     }
-    let Some(secret) = base32_decode(secret_b32) else { return false; };
-    let Ok(want) = code.parse::<u32>() else { return false; };
+    let secret = base32_decode(secret_b32)?;
+    let want = code.parse::<u32>().ok()?;
     let step = (now() as u64) / 30;
-    [step.wrapping_sub(1), step, step + 1].iter().any(|&c| hotp(&secret, c) == want)
+    [step.wrapping_sub(1), step, step + 1].into_iter().find(|&c| hotp(&secret, c) == want)
 }
 
 // ---- account crypto (passwords, TOTP secrets, invite tokens) --------------
@@ -683,7 +687,8 @@ async fn main() -> anyhow::Result<()> {
             created_ts INTEGER NOT NULL,
             created_by TEXT,
             last_login INTEGER,
-            privileges TEXT
+            privileges TEXT,
+            last_totp_step INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_admins_invite ON admins(invite_token);",
     )?;
@@ -692,6 +697,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = conn.execute("ALTER TABLE builds ADD COLUMN ip_full TEXT", []);
     let _ = conn.execute("ALTER TABLE events ADD COLUMN ip_full TEXT", []);
     let _ = conn.execute("ALTER TABLE admins ADD COLUMN privileges TEXT", []);
+    let _ = conn.execute("ALTER TABLE admins ADD COLUMN last_totp_step INTEGER", []);
 
     let http = reqwest::Client::builder()
         .user_agent("thingino-web-builder-broker")
@@ -1088,38 +1094,58 @@ async fn admin_login(
         let row = {
             let conn = st.db.lock();
             conn.query_row(
-                "SELECT pw_hash, totp_secret, disabled FROM admins WHERE username=?1",
+                "SELECT pw_hash, totp_secret, disabled, last_totp_step FROM admins WHERE username=?1",
                 [&u],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?)),
             )
             .optional().ok().flatten()
         };
         // Always run the PBKDF2 verify exactly once — against the real hash for a usable
         // (enrolled + enabled) account, else a fixed dummy — so a missing/disabled/unenrolled
         // username costs the same as a wrong password and timing can't enumerate usernames.
-        let usable = matches!(&row, Some((Some(_), _, 0)));
+        let usable = matches!(&row, Some((Some(_), _, 0, _)));
         let pw_hash = match &row {
-            Some((Some(h), _, 0)) => h.as_str(),
+            Some((Some(h), _, 0, _)) => h.as_str(),
             _ => DUMMY_PW_HASH,
         };
         let pw_ok = verify_password(&body.password, pw_hash);
-        let totp_ok = match &row {
-            Some((_, secret, _)) => totp_check(secret, totp),
-            None => false,
+        // Single-use TOTP: accept the code only if its 30s step is strictly newer than the
+        // last one recorded for this admin (NULL → 0, so a fresh admin's first valid code
+        // passes). Carries the matched step so it can be persisted on success.
+        let totp_match: Option<u64> = match &row {
+            Some((_, secret, _, last_step)) => {
+                let last = last_step.unwrap_or(0);
+                totp_step(secret, totp).filter(|&step| (step as i64) > last)
+            }
+            None => None,
         };
-        if usable && pw_ok && totp_ok {
-            let conn = st.db.lock();
-            conn.execute("UPDATE admins SET last_login=?2 WHERE username=?1", rusqlite::params![u, now()]).ok();
-            Some(u)
-        } else {
-            None
+        match (usable && pw_ok, totp_match) {
+            (true, Some(step)) => {
+                let conn = st.db.lock();
+                conn.execute(
+                    "UPDATE admins SET last_login=?2, last_totp_step=?3 WHERE username=?1",
+                    rusqlite::params![u, now(), step as i64],
+                ).ok();
+                Some(u)
+            }
+            _ => None,
         }
     } else if let (Some(admin_token), Some(secret)) = (st.cfg.admin_token.as_deref(), st.cfg.admin_totp_secret.as_deref()) {
         // Master break-glass: token + master TOTP (env secrets, independent of the DB).
-        if constant_time_eq(body.token.as_bytes(), admin_token.as_bytes()) && totp_check(secret, totp) {
-            Some("master".to_string())
-        } else {
-            None
+        // Single-use: the matched 30s step must be strictly newer than the last accepted one
+        // (the `master_totp_step` setting, default 0), so a master code can't be replayed.
+        let token_ok = constant_time_eq(body.token.as_bytes(), admin_token.as_bytes());
+        let last_step = {
+            let conn = st.db.lock();
+            get_setting(&conn, "master_totp_step").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0)
+        };
+        match totp_step(secret, totp) {
+            Some(step) if token_ok && step > last_step => {
+                let conn = st.db.lock();
+                set_setting(&conn, "master_totp_step", &step.to_string());
+                Some("master".to_string())
+            }
+            _ => None,
         }
     } else {
         None
@@ -1228,11 +1254,17 @@ struct ToggleReq {
     enabled: bool,
 }
 
+/// Admin: global build kill switch (enable/disable all builds). Requires the `kill_switch`
+/// privilege (or master).
 async fn admin_toggle(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<ToggleReq>) -> Response {
-    if !session_ok(&headers, &st) {
+    let Some(identity) = session_admin(&headers, &st) else {
         return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
-    }
+    };
     let conn = st.db.lock();
+    if !admin_can(&conn, &identity, "kill_switch") {
+        drop(conn);
+        return json_err(StatusCode::FORBIDDEN, "not permitted");
+    }
     set_setting(&conn, "builds_enabled", if body.enabled { "1" } else { "0" });
     log_event(&conn, "admin_toggle", None, None, None, &format!("builds_enabled={}", body.enabled), None);
     drop(conn);
@@ -1411,12 +1443,17 @@ async fn admin_reset_limits(State(st): State<AppState>, headers: HeaderMap) -> R
 }
 
 /// Admin: set runtime limit overrides (stored as the `limits` setting, layered over env).
+/// Requires the `edit_limits` privilege (or master).
 async fn admin_limits(State(st): State<AppState>, headers: HeaderMap, raw: Bytes) -> Response {
-    if !session_ok(&headers, &st) {
+    let Some(identity) = session_admin(&headers, &st) else {
         return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
-    }
+    };
     let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_else(|_| json!({}));
     let conn = st.db.lock();
+    if !admin_can(&conn, &identity, "edit_limits") {
+        drop(conn);
+        return json_err(StatusCode::FORBIDDEN, "not permitted");
+    }
     let cur = effective_limits(&conn, &st.cfg);
     // Each key: a positive int ≤ 100000 wins, else keep the current value.
     let pick = |key: &str, cur_val: i64| -> i64 {
@@ -1550,13 +1587,13 @@ async fn admin_set_privileges(State(st): State<AppState>, headers: HeaderMap, Pa
     let Ok(body) = serde_json::from_slice::<serde_json::Value>(&raw) else {
         return json_err(StatusCode::BAD_REQUEST, "bad request");
     };
-    // Keep only the three known privileges, in request order, first-occurrence deduped — the
+    // Keep only the known privileges, in request order, first-occurrence deduped — the
     // Rust form of `[...new Set(body.privileges.filter((p) => ADMIN_PRIVS.includes(p)))]`.
     let mut privs: Vec<String> = Vec::new();
     if let Some(arr) = body.get("privileges").and_then(|v| v.as_array()) {
         for item in arr {
             if let Some(s) = item.as_str() {
-                if matches!(s, "clear_logs" | "clear_builds" | "reset_limits") && !privs.iter().any(|p| p == s) {
+                if matches!(s, "clear_logs" | "clear_builds" | "reset_limits" | "edit_limits" | "kill_switch") && !privs.iter().any(|p| p == s) {
                     privs.push(s.to_string());
                 }
             }
@@ -1616,13 +1653,13 @@ async fn admin_accept_invite(State(st): State<AppState>, Json(body): Json<Accept
     let row = {
         let conn = st.db.lock();
         conn.query_row(
-            "SELECT username, totp_secret, invite_expires, pw_hash FROM admins WHERE invite_token=?1",
+            "SELECT username, totp_secret, invite_expires, pw_hash, last_totp_step FROM admins WHERE invite_token=?1",
             [&body.token],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<String>>(3)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<i64>>(4)?)),
         )
         .optional().ok().flatten()
     };
-    let Some((username, totp_secret, invite_expires, pw_hash)) = row else {
+    let Some((username, totp_secret, invite_expires, pw_hash, _last_totp_step)) = row else {
         return json_err(StatusCode::NOT_FOUND, "invalid or already-used invite");
     };
     if pw_hash.is_some() {
@@ -1634,7 +1671,10 @@ async fn admin_accept_invite(State(st): State<AppState>, Json(body): Json<Accept
     if body.password.chars().count() < 10 {
         return json_err(StatusCode::BAD_REQUEST, "password must be at least 10 characters");
     }
-    if !totp_check(&totp_secret, body.totp.trim()) {
+    // Validate the 2FA code, but do NOT consume the step here — enrollment isn't a login, and
+    // advancing it would reject the user's immediate first login with the same code. Single-use
+    // anti-replay applies from the first login onward (login advances the step).
+    if totp_step(&totp_secret, body.totp.trim()).is_none() {
         return json_err(StatusCode::UNAUTHORIZED, "that 2FA code doesn't match — re-scan and try the next code");
     }
     let hash = hash_password(&body.password);
