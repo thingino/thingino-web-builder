@@ -1,101 +1,97 @@
 # Cloudflare Worker broker (no-VPS, free tier)
 
-A drop-in alternative to the VPS Rust broker (`../broker`). Same GitHub Actions
-build pipeline and rolling-release downloads — but the control plane runs as a
-**Cloudflare Worker** ($0), with state in **D1** (SQLite) and the scheduler on a
-**1-minute Cron Trigger**.
+A drop-in alternative to the VPS Rust broker (`../broker`) — same GitHub Actions
+build pipeline and rolling-release downloads, but the control plane runs as a
+**Cloudflare Worker** ($0): state in **D1** (SQLite), background reconciliation on a
+**1-minute Cron Trigger**, and the UI on **GitHub Pages**.
 
 ```
-GitHub Pages (static UI) ──fetch (CORS)──▶ Worker (this) ──▶ D1 + Cron ──▶ GitHub Actions
+GitHub Pages (UI) ──fetch (CORS)──▶ Worker (API) ──▶ D1 + Cron ──▶ GitHub Actions
 ```
 
-## Deploy (one-time)
+Builds **dispatch inline** (sub-second, the moment you submit) and **cancel inline**
+too; the cron only reconciles run status and runs the retention reaper.
+
+## What it does
+
+Server-issued identity; per-user / per-IP (/64, via `CF-Connecting-IP`) / global
+hourly limits; FIFO queue + concurrency cap; `(defconfig, commit)` dedup;
+`repository_dispatch`; run correlation; cancel; retention reaper + DB pruning;
+audit events; and a full **admin panel** — TOTP 2FA, kill switch, clear logs, reset
+limits, live stats — with sessions in D1.
+
+The one piece not ported from the VPS broker is **GitHub App auth**; the Worker uses
+a static `GITHUB_TOKEN` secret (App auth would be Web Crypto RS256 JWT).
+
+## Deploy
+
+### One-time setup
 
 ```bash
-npm i -g wrangler && wrangler login
+npm i -g wrangler && wrangler login        # or export CLOUDFLARE_API_TOKEN
 
 # 1. Create D1, paste the printed database_id into wrangler.toml
 wrangler d1 create thingino-builder
 
-# 2. Apply the schema to the remote DB
+# 2. Apply the schema (builds / events / settings / sessions)
 wrangler d1 execute thingino-builder --remote --file schema.sql
 
-# 3. Set the GitHub token (fine-grained PAT: Contents R/W + Actions R/W)
-wrangler secret put GITHUB_TOKEN
+# 3. Secrets (Cloudflare-side; persist across deploys, never in the repo)
+wrangler secret put GITHUB_TOKEN           # PAT: Contents R/W + Actions R/W
+wrangler secret put ADMIN_TOKEN            # admin password
+wrangler secret put ADMIN_TOTP_SECRET      # base32 TOTP seed (enroll in an authenticator)
 
-# 4. Edit wrangler.toml: set ALLOW_ORIGIN to your Pages origin
-#    (e.g. https://thingino.github.io)
-
-# 5. Deploy → prints the Worker URL
+# 4. Deploy → prints the Worker URL
 wrangler deploy
 ```
 
 ### CI deploy (git push = deploy)
 
-`.github/workflows/deploy-worker.yml` runs `wrangler deploy` on every push that
-touches `worker/`. It needs two repo secrets — set once:
+`.github/workflows/deploy-worker.yml` runs `wrangler deploy` on every push to
+`worker/`. It needs two repo **Actions** secrets:
 
 ```bash
-gh secret set CLOUDFLARE_API_TOKEN   # Workers Scripts:Edit + D1:Edit
-gh secret set CLOUDFLARE_ACCOUNT_ID  # your account id
+gh secret set CLOUDFLARE_API_TOKEN     # Workers Scripts:Edit + D1:Edit
+gh secret set CLOUDFLARE_ACCOUNT_ID
 ```
 
-The Worker's own `GITHUB_TOKEN` is a **Cloudflare** secret (`wrangler secret put`)
-and persists across deploys — it is never stored in the repo.
+CI stamps the build via `--var VERSION:"v0.1.0-<sha>"`, shown in the footer and
+`/api/stats`.
 
-## Frontend on GitHub Pages
+## UI on GitHub Pages
 
-The static site is `../web`. Host it on GitHub Pages (repo **Settings → Pages**).
-One change: point it at the Worker. In `web/index.html` (and `admin.html`) add an
-API base and prepend it to the `fetch()` calls:
+`.github/workflows/pages.yml` publishes `../web` to GitHub Pages on every push to
+`web/`. It writes `web/config.js` with the Worker URL (`window.API_BASE`) so the
+Pages site calls the Worker cross-origin. CORS is `*`; identity is header-based
+(`X-Builder-Uid` + a localStorage mirror), so no cookies are needed cross-origin.
+Assets use relative paths, so it works both at the project URL
+(`<org>.github.io/<repo>/`) and at a custom domain.
 
-```js
-const API='https://thingino-web-builder.<you>.workers.dev';
-// fetch(API + path, ...)  instead of fetch(path, ...)
-```
+**Custom domain** (the `webflash.thingino.com` model — no Cloudflare DNS required):
+add a `CNAME` DNS record at your registrar (`web-builder.thingino.com → <org>.github.io`)
+and uncomment the `CNAME` line in `pages.yml`.
 
-The frontend already sends `X-Builder-Uid` and reads `uid` from the JSON body, so
-identity works **cross-origin without cookies**. The Worker returns matching CORS
-headers — just set `ALLOW_ORIGIN` to your Pages URL. (Prefer no CORS at all? Host
-the static site on **Cloudflare Pages** and route `/api/*` to this Worker → same
-origin.)
+## Admin
 
-## Local smoke test (no Cloudflare account needed)
+`<site>/admin.html` → log in with `ADMIN_TOKEN` + a 6-digit TOTP code. Actions:
+enable/disable builds, **clear logs** (wipe audit events), **reset limits** (reset
+the hourly counts without deleting build history), and live stats / recent
+builds + events. (The "Update" button is hidden here — there's nothing to
+self-update; a deploy is just `git push`.)
+
+## Local smoke test
 
 ```bash
-wrangler dev --local
+wrangler dev          # needs Node 22+; uses a local D1
 curl -s localhost:8787/api/health        # -> ok
 curl -s localhost:8787/api/defconfigs | head
 ```
 
-`--local` uses a local D1; `/api/defconfigs` fetches the thingino board list from
-GitHub (unauthenticated) and caches it.
-
-## Test a real build
-
-```bash
-curl -s -X POST https://<worker-url>/api/build \
-  -H 'content-type: application/json' -H 'X-Builder-Uid: testuser12345' \
-  -d '{"defconfig":"atom_cam2_t31x_gc2053_atbm6031"}'
-# within ~1 min the cron dispatches it; then poll:
-curl -s https://<worker-url>/api/status/<build_id>
-```
-
-## Ported vs not
-
-**Ported:** server-issued identity, per-user / per-IP (/64, via `CF-Connecting-IP`)
-/ global hourly limits, FIFO queue + concurrency cap, `(defconfig, commit)` dedup,
-`repository_dispatch`, run correlation, cancel, retention reaper + DB pruning,
-audit events.
-
-**Not in this PoC (straightforward follow-ups, both Workers-compatible):** admin
-panel + **TOTP 2FA** (Web Crypto HMAC-SHA1) and **GitHub App auth** (Web Crypto
-RS256 JWT). For now the Worker uses a static `GITHUB_TOKEN` secret.
-
 ## Trade-offs vs the VPS
 
-- Scheduler runs **every 1 min** (Cloudflare cron minimum) vs the VPS's 10 s loop —
-  build status can lag up to a minute.
-- Rate-limit checks are count-then-insert on D1 (no single-mutex serialization), so
-  a burst can exceed a cap by 1–2. Use a **Durable Object** if you need strict caps.
-- No container to self-update — "update" is `wrangler deploy` (or a deploy Action).
+- Dispatch and cancel are **inline (instant)**. Run-completion detection rides the
+  1-min cron — negligible against a ~30-min build; a Durable Object alarm could poll
+  faster if ever needed.
+- Rate-limit checks are count-then-insert on D1 (no single-mutex), so a burst can
+  exceed a cap by 1–2. A Durable Object would give strict caps.
+- No container to self-update — "update" is `git push` (CI runs `wrangler deploy`).

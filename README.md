@@ -3,7 +3,8 @@
 A public, rate-limited **web firmware builder** for
 [thingino](https://github.com/themactep/thingino-firmware). Pick a camera
 defconfig in the browser, submit, and it builds on **GitHub Actions** — no build
-compute on the server. A small Rust broker orchestrates; the heavy lifting is
+compute on the server. A small broker orchestrates — run it as a Rust service on a
+VPS **or** as a Cloudflare Worker with no server at all — and the heavy lifting is
 done by the CI.
 
 ## How it works
@@ -44,19 +45,24 @@ browser ──POST /api/build──▶ Rust broker ──repository_dispatch─�
 
 | Path | What |
 |---|---|
-| `broker/` | Rust control plane + scheduler (axum + SQLite) |
-| `web/` | static UI (Bootstrap; self-hosted assets in `web/vendor/`) |
+| `broker/` | Rust control plane + scheduler (axum + SQLite) — the VPS path |
+| `worker/` | **no-VPS** alternative: the same control plane as a Cloudflare Worker + D1 |
+| `web/` | static UI (Bootstrap; self-hosted assets in `web/vendor/`) — shared by both |
 | `.github/workflows/build.yml` | the CI build worker (`repository_dispatch`) |
-| `.github/workflows/release.yml` | builds + publishes the image to `ghcr.io` |
-| `Containerfile` | broker image (published to `ghcr.io/thingino/thingino-web-builder`) |
-| `deploy/quadlet/`, `deploy/systemd/`, `deploy.sh` | Podman/Quadlet deploy + self-update units |
-| `setup.sh`, `creds.sh` | generate / rotate the admin token + TOTP |
-| `DEPLOY.md` | full deployment guide |
+| `.github/workflows/release.yml` | builds + publishes the broker image to `ghcr.io` |
+| `.github/workflows/deploy-worker.yml`, `pages.yml` | deploy the Worker + UI (no-VPS path) |
+| `Containerfile`, `deploy/`, `deploy.sh`, `setup.sh`, `creds.sh` | Podman/Quadlet deploy (VPS path) |
+| `DEPLOY.md`, `worker/README.md` | deployment guides — **VPS** · **no-VPS** |
 
 ## Deploy
 
-Podman + Quadlet (systemd); TLS via Caddy (auto Let's Encrypt or BYO certs). Full
-guide in **[DEPLOY.md](DEPLOY.md)** — short version:
+Two ways to run it — same build pipeline and UI either way:
+
+**A. No server ($0):** Cloudflare Worker (API + D1 + cron) + GitHub Pages (UI),
+both free tier. Guide → **[worker/README.md](worker/README.md)**.
+
+**B. VPS:** the Rust broker on Podman + Quadlet (systemd); TLS via Caddy (auto
+Let's Encrypt or BYO certs). Guide → **[DEPLOY.md](DEPLOY.md)** — short version:
 
 ```bash
 sudo git clone https://github.com/thingino/thingino-web-builder.git /opt/thingino-web-builder
