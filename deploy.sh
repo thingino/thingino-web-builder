@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the image and install/start the Podman Quadlet units (rootful).
-# Re-run after `git pull` to update — it rebuilds and restarts.
+# Pull the published image from ghcr.io and install/start the Podman Quadlet units (rootful).
+# The image is built by CI (release-image workflow). Override with IMAGE / IMAGE_TAG env.
 set -euo pipefail
 cd "$(dirname "$0")"
 DIR="$(pwd)"
@@ -10,15 +10,15 @@ DIR="$(pwd)"
 command -v podman >/dev/null 2>&1 || { echo "podman is not installed"; exit 1; }
 mkdir -p certs
 
-SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
-echo "==> building image (BUILD_SHA=$SHA)"
-# --network=host so the build's cargo/apt can use the host's DNS (rescues LXC/CI hosts).
-podman build --network=host --build-arg BUILD_SHA="$SHA" -t localhost/thingino-web-builder:latest .
+IMAGE="${IMAGE:-ghcr.io/thingino/thingino-web-builder}"
+TAG="${IMAGE_TAG:-latest}"
+echo "==> pulling ${IMAGE}:${TAG}"
+podman pull "${IMAGE}:${TAG}"
 
 echo "==> installing Quadlet units to /etc/containers/systemd"
 install -d /etc/containers/systemd
 for f in deploy/quadlet/*.container; do
-  sed "s|@DIR@|$DIR|g" "$f" > "/etc/containers/systemd/$(basename "$f")"
+  sed -e "s|@DIR@|$DIR|g" -e "s|@IMAGE@|${IMAGE}:${TAG}|g" "$f" > "/etc/containers/systemd/$(basename "$f")"
 done
 
 echo "==> (re)starting services"

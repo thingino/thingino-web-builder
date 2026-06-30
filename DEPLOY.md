@@ -24,11 +24,16 @@ sudo ./setup.sh                  # generates ADMIN_TOKEN + ADMIN_TOTP_SECRET, pr
 #   -> scan the QR into Google Authenticator
 #   -> edit .env: set DOMAIN, GITHUB_REPO, GITHUB_TOKEN
 
-sudo ./deploy.sh                 # builds the image, installs Quadlet units, starts services
+sudo ./deploy.sh                 # pulls the ghcr image, installs Quadlet units, starts services
 ```
 
 Open `https://<DOMAIN>` — admin at `/admin.html` (token + 6-digit code). Caddy
 fetches a Let's Encrypt cert automatically on first start.
+
+The broker image is **built by CI and published to `ghcr.io/thingino/thingino-web-builder`**;
+`deploy.sh` pulls it (no toolchain needed on the box). A **release** is cut by pushing
+a `v*` tag — the workflow publishes `:vX.Y.Z` + `:latest` + a GitHub Release. Pin a
+specific version with `IMAGE_TAG=v1.2.0 sudo ./deploy.sh` (default `latest`).
 
 > Clone to a stable path like `/opt/thingino-web-builder`: the Quadlet units
 > reference this directory for `.env`, the `Caddyfile`, and `./certs`.
@@ -74,7 +79,9 @@ Rootless instead of rootful? It works, but privileged ports need one of:
 
 ## Operating it
 
-- **Update:** `git pull && sudo ./deploy.sh` (rebuilds + restarts).
+- **Update:** `sudo podman auto-update` pulls a newer published image and restarts
+  (the unit carries `AutoUpdate=registry`); or re-run `sudo ./deploy.sh`. The admin
+  panel also surfaces "update available" and an **Update** button that does this.
 - **Logs:** `journalctl -u thingino-broker -u thingino-caddy -f`
 - **Restart:** `systemctl restart thingino-broker thingino-caddy`
 - **Admin creds:** `./creds.sh show | rotate-token | rotate-totp` (edits `.env`,

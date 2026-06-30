@@ -6,7 +6,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=localhost/thingino-web-builder:latest
+# Published by CI to ghcr.io; @IMAGE@ is substituted (image:tag) by deploy.sh.
+Image=@IMAGE@
+# Let `podman auto-update` swap in a newer image from the registry (UI-triggered).
+AutoUpdate=registry
 EnvironmentFile=@DIR@/.env
 Environment=IP_HEADER=X-Real-IP
 Volume=thingino-broker-data:/data
