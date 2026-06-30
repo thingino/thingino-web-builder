@@ -43,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires);
 -- Named admin users. The master token (a Worker secret) is separate + always works.
 -- pw_hash = "iters.saltB64.hashB64" (PBKDF2-SHA256); null until the invite is accepted.
 -- privileges = JSON array of granted privileged-action names (NULL/absent = none).
+-- last_totp_step = the 30s TOTP step last accepted (single-use anti-replay; null = none yet).
 CREATE TABLE IF NOT EXISTS admins (
   username TEXT PRIMARY KEY,
   pw_hash TEXT,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS admins (
   created_ts INTEGER NOT NULL,
   created_by TEXT,
   last_login INTEGER,
-  privileges TEXT
+  privileges TEXT,
+  last_totp_step INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_admins_invite ON admins(invite_token);

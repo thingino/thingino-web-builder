@@ -236,7 +236,7 @@ async function doUpdate(){
 
 // --- admin user management (master only) + invite enrollment ---
 let usersShown=false;
-const PRIVS=[['clear_logs','clear logs'],['clear_builds','clear builds'],['reset_limits','reset limits']];
+const PRIVS=[['clear_logs','clear logs'],['clear_builds','clear builds'],['reset_limits','reset limits'],['edit_limits','edit limits'],['kill_switch','kill switch']];
 const privCell=u=>PRIVS.map(([k,lbl])=>`<label class="me-2 small" style="white-space:nowrap"><input type="checkbox" class="privbox" data-u="${esc(u.username)}" data-p="${k}" ${(u.privileges||[]).includes(k)?'checked':''}> ${lbl}</label>`).join('');
 async function renderUsers(){
   const r=await fetch(API+'/api/admin/users',{headers:{Authorization:'Bearer '+tok()}});

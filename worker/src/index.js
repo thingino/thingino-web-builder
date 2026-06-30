@@ -16,7 +16,7 @@ const WINDOW = 3600;
 const DAY = 86400;
 // Per-admin privileged actions. Named admins are granted a subset; the master always
 // has all of them. Everything else in the admin panel stays open to any admin.
-const ADMIN_PRIVS = ["clear_logs", "clear_builds", "reset_limits"];
+const ADMIN_PRIVS = ["clear_logs", "clear_builds", "reset_limits", "edit_limits", "kill_switch"];
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const uuid = () => crypto.randomUUID();
@@ -571,6 +571,17 @@ async function totpCheck(secretB32, code) {
   for (const c of [step - 1, step, step + 1]) if ((await hotp(secret, c)) === want) return true;
   return false;
 }
+// Like totpCheck, but returns the matching 30s step counter (for single-use anti-replay)
+// instead of a bool — or null if nothing in the ±1 window matches / bad input.
+async function totpStep(secretB32, code) {
+  if (!/^[0-9]{6}$/.test(code)) return null;
+  const secret = base32Decode(secretB32);
+  if (!secret) return null;
+  const want = parseInt(code, 10);
+  const step = Math.floor(Date.now() / 1000 / 30);
+  for (const c of [step - 1, step, step + 1]) if ((await hotp(secret, c)) === want) return c;
+  return null;
+}
 // --- account helpers: randomness, base32 encode, base64, PBKDF2 password hashing ---
 const randBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
 const randToken = () => [...randBytes(24)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -642,18 +653,27 @@ async function handleAdminLogin(request, env) {
   if (body.username) {
     // Named admin: username + password + their own TOTP (all enforced).
     const u = String(body.username).toLowerCase();
-    const a = await env.DB.prepare("SELECT pw_hash,totp_secret,disabled FROM admins WHERE username=?").bind(u).first();
+    const a = await env.DB.prepare("SELECT pw_hash,totp_secret,disabled,last_totp_step FROM admins WHERE username=?").bind(u).first();
     // Always pay the PBKDF2 cost — verify against a dummy hash when the user is absent/
     // disabled/unenrolled — so response time doesn't reveal whether the username exists.
     const usable = a && !a.disabled && a.pw_hash;
     const pwOk = await verifyPassword(String(body.password || ""), usable ? a.pw_hash : DUMMY_PW_HASH);
-    if (usable && pwOk && (await totpCheck(a.totp_secret, totp))) {
-      identity = u;
-      await env.DB.prepare("UPDATE admins SET last_login=? WHERE username=?").bind(nowSec(), u).run();
+    if (usable && pwOk) {
+      // Single-use TOTP: the code's 30s step must be strictly newer than the last we accepted.
+      const step = await totpStep(a.totp_secret, totp);
+      if (step !== null && step > (a.last_totp_step || 0)) {
+        identity = u;
+        await env.DB.prepare("UPDATE admins SET last_login=?, last_totp_step=? WHERE username=?").bind(nowSec(), step, u).run();
+      }
     }
   } else if (env.ADMIN_TOKEN && env.ADMIN_TOTP_SECRET) {
     // Master break-glass: token + master TOTP (a Worker secret, independent of D1).
-    if (ctEq(String(body.token || ""), env.ADMIN_TOKEN) && (await totpCheck(env.ADMIN_TOTP_SECRET, totp))) identity = "master";
+    const mstep = await totpStep(env.ADMIN_TOTP_SECRET, totp);
+    const mlast = parseInt((await getSetting(env, "master_totp_step")) || "0", 10);
+    if (ctEq(String(body.token || ""), env.ADMIN_TOKEN) && mstep !== null && mstep > mlast) {
+      await setSetting(env, "master_totp_step", String(mstep));
+      identity = "master";
+    }
   }
   if (!identity) {
     // Sanitize the username before logging so arbitrary text/HTML can't enter events.detail.
@@ -746,12 +766,15 @@ async function handleGetInvite(token, env) {
 }
 async function handleAcceptInvite(request, env) {
   let body; try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
-  const a = await env.DB.prepare("SELECT username,totp_secret,invite_expires,pw_hash FROM admins WHERE invite_token=?").bind(String(body.token || "")).first();
+  const a = await env.DB.prepare("SELECT username,totp_secret,invite_expires,pw_hash,last_totp_step FROM admins WHERE invite_token=?").bind(String(body.token || "")).first();
   if (!a || a.pw_hash) return json({ error: "invalid or already-used invite" }, 404, env);
   if (a.invite_expires <= nowSec()) return json({ error: "this invite has expired" }, 410, env);
   const pw = String(body.password || "");
   if (pw.length < 10) return json({ error: "password must be at least 10 characters" }, 400, env);
-  if (!(await totpCheck(a.totp_secret, String(body.totp || "").trim())))
+  // Validate the 2FA code, but do NOT consume the step here — enrollment isn't a login,
+  // and advancing it would reject the user's immediate first login with the same code.
+  // Single-use anti-replay applies from the first login onward (login advances the step).
+  if ((await totpStep(a.totp_secret, String(body.totp || "").trim())) === null)
     return json({ error: "that 2FA code doesn't match — re-scan and try the next code" }, 401, env);
   await env.DB.prepare("UPDATE admins SET pw_hash=?, invite_token=NULL, invite_expires=NULL WHERE username=?")
     .bind(await hashPassword(pw), a.username).run();
@@ -793,7 +816,9 @@ async function handleAdminStats(request, env) {
   }, 200, env);
 }
 async function handleAdminToggle(request, env) {
-  if (!(await sessionAdmin(request, env))) return json({ error: "admin auth required" }, 401, env);
+  const who = await sessionAdmin(request, env);
+  if (!who) return json({ error: "admin auth required" }, 401, env);
+  if (!(await adminCan(env, who, "kill_switch"))) return json({ error: "not permitted" }, 403, env);
   let body;
   try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
   await setSetting(env, "builds_enabled", body.enabled ? "1" : "0");
@@ -841,7 +866,9 @@ async function handleAdminResetLimits(request, env) {
 }
 // Set runtime limit overrides (stored in D1; layered over the wrangler.toml vars).
 async function handleAdminLimits(request, env) {
-  if (!(await sessionAdmin(request, env))) return json({ error: "admin auth required" }, 401, env);
+  const who = await sessionAdmin(request, env);
+  if (!who) return json({ error: "admin auth required" }, 401, env);
+  if (!(await adminCan(env, who, "edit_limits"))) return json({ error: "not permitted" }, 403, env);
   let body;
   try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
   const cur = await limits(env);
