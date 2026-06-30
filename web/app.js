@@ -11,7 +11,7 @@
   const ACTIVE=new Set(['queued','running','cancelling']);
 
   const fmt=s=>{ s=Math.max(0,Math.floor(s)); return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; };
-  const mins=s=> s==null?'—':`~${Math.max(1,Math.round(s/60))} min`;
+  const mins=s=> s==null?'—':I18N.t('min_approx',{n:Math.max(1,Math.round(s/60))});
   const spin=()=>'<span class="spinner-border spinner-border-sm text-warning me-2"></span>';
 
   async function api(path, opts={}) {
@@ -26,12 +26,12 @@
   function validate(){
     const v=$('board').value.trim(); $('go').disabled=!allowed.has(v);
     const h=$('hint');
-    if(v && !allowed.has(v)){ h.textContent='Not a known defconfig.'; h.className='form-text text-danger'; }
-    else { h.textContent=allowed.size?`${allowed.size} camera profiles available.`:''; h.className='form-text muted'; }
+    if(v && !allowed.has(v)){ h.textContent=I18N.t('not_known_defconfig'); h.className='form-text text-danger'; }
+    else { h.textContent=allowed.size?I18N.t('profiles_available',{n:allowed.size}):''; h.className='form-text muted'; }
   }
   async function loadBoards(){
     const {ok,data}=await api('/api/defconfigs');
-    if(!ok||!Array.isArray(data)){ const h=$('hint'); h.textContent='Could not load camera list — is the broker up?'; h.className='form-text text-danger'; return; }
+    if(!ok||!Array.isArray(data)){ const h=$('hint'); h.textContent=I18N.t('cameras_load_failed'); h.className='form-text text-danger'; return; }
     data.sort(); allowed=new Set(data);
     $('boards').innerHTML=data.map(b=>`<option value="${esc(b)}">`).join('');
     validate();
@@ -39,12 +39,12 @@
 
   function renderGlobal(d){
     curCommit=d.commit||null;
-    $('stats').innerHTML=`<i class="bi bi-hdd-stack me-1"></i><b>${esc(d.running)}</b>/${esc(d.max_concurrent)} building &nbsp;·&nbsp; <b>${esc(d.queued)}</b> queued &nbsp;·&nbsp; typical build <b>${mins(d.avg_build_secs)}</b>`;
+    $('stats').innerHTML=`<i class="bi bi-hdd-stack me-1"></i><b>${esc(d.running)}</b>/${esc(d.max_concurrent)} ${I18N.t('stats_building')} &nbsp;·&nbsp; <b>${esc(d.queued)}</b> ${I18N.t('stats_queued')} &nbsp;·&nbsp; ${I18N.t('stats_typical')} <b>${mins(d.avg_build_secs)}</b>`;
     const cb=$('commit-badge');
-    if(curCommit){ cb.textContent='thingino @ '+curCommit.slice(0,7); cb.classList.remove('d-none'); } else cb.classList.add('d-none');
+    if(curCommit){ cb.textContent=I18N.t('commit_badge_text',{commit:curCommit.slice(0,7)}); cb.classList.remove('d-none'); } else cb.classList.add('d-none');
     if(d.version){ const v=$('version'); if(v) v.textContent=d.version; }
     const b=$('banner');
-    if(d.builds_enabled===false){ b.innerHTML='<i class="bi bi-exclamation-triangle me-1"></i>Builds are temporarily disabled by the admin.'; b.classList.remove('d-none'); }
+    if(d.builds_enabled===false){ b.innerHTML='<i class="bi bi-exclamation-triangle me-1"></i>'+I18N.t('builds_disabled'); b.classList.remove('d-none'); }
     else b.classList.add('d-none');
   }
 
@@ -54,23 +54,23 @@
     picker.classList.toggle('d-none', ACTIVE.has(you.state));
     mb.classList.remove('d-none');
     const live=(you.elapsed_secs||0)+(Date.now()-youAt)/1000;
-    const meta=`<div class="small muted mt-2">defconfig <code>${esc(you.defconfig)}</code><br>build id <code>${esc(you.build_id)}</code>${you.deduped?'<br><span class="text-warning">reused an existing identical image</span>':''}</div>`;
+    const meta=`<div class="small muted mt-2">${I18N.t('meta_defconfig')} <code>${esc(you.defconfig)}</code><br>${I18N.t('meta_build_id')} <code>${esc(you.build_id)}</code>${you.deduped?`<br><span class="text-warning">${I18N.t('deduped_note')}</span>`:''}</div>`;
     let h='';
     if(you.state==='queued')
-      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Queued</strong> — position ${esc(you.position)}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
+      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>${I18N.t('state_queued')}</strong> ${I18N.t('queued_position',{n:esc(you.position)})}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">${I18N.t('cancel_btn')}</button></div></div>`;
     else if(you.state==='running')
-      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Building…</strong> ${fmt(live)}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
+      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>${I18N.t('state_building')}</strong> ${fmt(live)}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">${I18N.t('cancel_btn')}</button></div></div>`;
     else if(you.state==='cancelling')
-      h=`<div class="alert alert-warning mb-0">${spin()}<strong>Cancelling…</strong><div class="small">stopping the build — this can take a moment</div>${meta}</div>`;
+      h=`<div class="alert alert-warning mb-0">${spin()}<strong>${I18N.t('state_cancelling')}</strong><div class="small">${I18N.t('cancelling_note')}</div>${meta}</div>`;
     else if(you.state==='done')
-      h=`<div class="alert alert-success mb-0"><i class="bi bi-check-circle-fill me-1"></i><strong>Build ready</strong>${meta}
-        <div class="mt-2 d-flex gap-2 flex-wrap"><a class="btn btn-thingino btn-sm" href="${esc(you.download_url)}" download><i class="bi bi-download me-1"></i>Download .bin</a>
-        <button class="btn btn-outline-secondary btn-sm" id="again">Build another</button></div>
-        <div class="small text-warning mt-2"><i class="bi bi-clock me-1"></i>Available for ~30 minutes, then removed.</div></div>`;
+      h=`<div class="alert alert-success mb-0"><i class="bi bi-check-circle-fill me-1"></i><strong>${I18N.t('state_done')}</strong>${meta}
+        <div class="mt-2 d-flex gap-2 flex-wrap"><a class="btn btn-thingino btn-sm" href="${esc(you.download_url)}" download><i class="bi bi-download me-1"></i>${I18N.t('download_btn')}</a>
+        <button class="btn btn-outline-secondary btn-sm" id="again">${I18N.t('build_another_btn')}</button></div>
+        <div class="small text-warning mt-2"><i class="bi bi-clock me-1"></i>${I18N.t('download_window_note')}</div></div>`;
     else if(you.state==='failed')
-      h=`<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-1"></i><strong>Build failed</strong>${meta}<div class="mt-2"><button class="btn btn-outline-warning btn-sm" id="again">Try again</button></div></div>`;
+      h=`<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-1"></i><strong>${I18N.t('state_failed')}</strong>${meta}<div class="mt-2"><button class="btn btn-outline-warning btn-sm" id="again">${I18N.t('try_again_btn')}</button></div></div>`;
     else
-      h=`<div class="alert alert-secondary mb-0"><strong>${you.state==='expired'?'Download window expired':'Cancelled'}</strong>${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="again">Build again</button></div></div>`;
+      h=`<div class="alert alert-secondary mb-0"><strong>${you.state==='expired'?I18N.t('state_expired'):I18N.t('state_cancelled')}</strong>${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="again">${I18N.t('build_again_btn')}</button></div></div>`;
     mb.innerHTML=h;
     const c=$('cancel'); if(c) c.onclick=cancelBuild;
     const a=$('again'); if(a) a.onclick=()=>{ setMy(null); you=null; renderYou(); $('board').focus(); };
@@ -92,7 +92,7 @@
     if(!allowed.has(defconfig)) return;
     $('go').disabled=true;
     const {ok,status,data}=await api('/api/build',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({defconfig})});
-    if(!ok){ const h=$('hint'); h.textContent=(data&&data.error)||`Request failed (${status}).`; h.className='form-text text-danger'; $('go').disabled=false; return; }
+    if(!ok){ const h=$('hint'); h.textContent=(data&&data.error)||I18N.t('request_failed',{status}); h.className='form-text text-danger'; $('go').disabled=false; return; }
     setMy(data.build_id);
     you={build_id:data.build_id, defconfig:data.defconfig, state:data.state||'queued', position:data.position||0, elapsed_secs:0, download_url:data.download_url, deduped:data.deduped};
     youAt=Date.now(); renderYou(); refresh();
@@ -100,7 +100,7 @@
 
   async function cancelBuild(){
     if(!you) return;
-    const b=$('cancel'); if(b){ b.disabled=true; b.textContent='Cancelling…'; }
+    const b=$('cancel'); if(b){ b.disabled=true; b.textContent=I18N.t('state_cancelling'); }
     const {data}=await api(`/api/cancel/${you.build_id}`,{method:'POST'});
     if(data&&data.state){ you.state=(data.state==='cancelled')?'cancelled':'cancelling'; youAt=Date.now(); renderYou(); }
     refresh();
@@ -109,6 +109,8 @@
   $('board').addEventListener('input',validate);
   $('board').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!$('go').disabled) submit(); });
   $('go').addEventListener('click',submit);
+  I18N.apply(); I18N.selector('lang-slot');
+  window.addEventListener('i18nchange',()=>{ I18N.apply(); validate(); renderYou(); refresh(); });
   loadBoards(); refresh();
   setInterval(refresh, 5000);
   setInterval(()=>{ if(you&&you.state==='running') renderYou(); }, 1000);

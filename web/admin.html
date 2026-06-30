@@ -3,8 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.workers.dev; object-src 'none'; base-uri 'none'">
-  <title>thingino · Builder Admin</title>
+  <!-- Don't cache the page shell, so a redeploy is picked up without a hard reload. GitHub Pages
+       ignores these (it serves max-age=600), so the network-first sw.js below is the real fix. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.workers.dev; worker-src 'self'; object-src 'none'; base-uri 'none'">
+  <script src="sw-register.js"></script>
+  <title data-i18n="page_title">thingino · Builder Admin</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link href="vendor/bootstrap.min.css" rel="stylesheet">
@@ -27,37 +33,38 @@
 
 <div id="gate" style="max-width:420px;margin:8vh auto 0;">
   <div class="card">
-    <div class="card-header"><h2 class="card-title mb-0 fs-5"><i class="bi bi-shield-lock me-1"></i> Admin</h2></div>
+    <div class="card-header"><h2 class="card-title mb-0 fs-5"><i class="bi bi-shield-lock me-1"></i> <span data-i18n="gate_title">Admin</span></h2></div>
     <div class="card-body">
-      <p class="small muted" id="gate-hint">Sign in with your admin username, password, and 6-digit code.</p>
+      <p class="small muted" id="gate-hint" data-i18n="signin_hint">Sign in with your admin username, password, and 6-digit code.</p>
+      <div class="mb-2"><span id="lang-slot"></span></div>
       <form>
-        <input id="username" class="form-control mb-2" placeholder="Username" autocomplete="username">
-        <input id="password" type="password" class="form-control mb-2" placeholder="Password" autocomplete="current-password">
-        <input id="token" type="password" class="form-control mb-2" placeholder="Master token" autocomplete="off" style="display:none">
-        <input id="totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off" required>
-        <button id="login" type="button" class="btn btn-thingino w-100">Sign in</button>
+        <input id="username" class="form-control mb-2" placeholder="Username" data-i18n-ph="username_ph" autocomplete="username">
+        <input id="password" type="password" class="form-control mb-2" placeholder="Password" data-i18n-ph="password_ph" autocomplete="current-password">
+        <input id="token" type="password" class="form-control mb-2" placeholder="Master token" data-i18n-ph="token_ph" autocomplete="off" style="display:none">
+        <input id="totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" data-i18n-ph="totp_ph" autocomplete="off" required>
+        <button id="login" type="button" class="btn btn-thingino w-100" data-i18n="signin_btn">Sign in</button>
       </form>
       <div class="text-danger small mt-2" id="gate-err"></div>
-      <a href="#" id="master-toggle" class="small muted d-block mt-2">Use master token instead</a>
+      <a href="#" id="master-toggle" class="small muted d-block mt-2" data-i18n="master_toggle">Use master token instead</a>
     </div>
   </div>
 </div>
 
 <div id="enroll" style="display:none;max-width:440px;margin:6vh auto 0;">
   <div class="card">
-    <div class="card-header"><h2 class="card-title mb-0 fs-5"><i class="bi bi-person-plus me-1"></i> Set up your admin account</h2></div>
+    <div class="card-header"><h2 class="card-title mb-0 fs-5"><i class="bi bi-person-plus me-1"></i> <span data-i18n="enroll_title">Set up your admin account</span></h2></div>
     <div class="card-body">
-      <p class="small muted mb-2">Account: <code id="enroll-user">…</code></p>
-      <p class="small mb-1"><strong>1.</strong> Scan with your authenticator app (Google Authenticator, Authy, …):</p>
+      <p class="small muted mb-2"><span data-i18n="enroll_account">Account:</span> <code id="enroll-user">…</code></p>
+      <p class="small mb-1" data-i18n-html="enroll_step1"><strong>1.</strong> Scan with your authenticator app (Google Authenticator, Authy, …):</p>
       <div id="enroll-qr" class="my-2 p-2 bg-white rounded mx-auto" style="width:fit-content"></div>
-      <p class="small muted">…or enter this key manually: <code id="enroll-secret" style="word-break:break-all"></code></p>
+      <p class="small muted"><span data-i18n="enroll_secret_hint">…or enter this key manually:</span> <code id="enroll-secret" style="word-break:break-all"></code></p>
       <hr>
-      <p class="small mb-1"><strong>2.</strong> Set a password (min 10 chars) and enter a 6-digit code to confirm:</p>
+      <p class="small mb-1" data-i18n-html="enroll_step2"><strong>2.</strong> Set a password (min 10 chars) and enter a 6-digit code to confirm:</p>
       <form>
-        <input id="enroll-pw" type="password" class="form-control mb-2" placeholder="New password" autocomplete="new-password">
-        <input id="enroll-pw2" type="password" class="form-control mb-2" placeholder="Confirm password" autocomplete="new-password">
-        <input id="enroll-totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off">
-        <button id="enroll-btn" type="button" class="btn btn-thingino w-100">Set up account</button>
+        <input id="enroll-pw" type="password" class="form-control mb-2" placeholder="New password" data-i18n-ph="enroll_pw_ph" autocomplete="new-password">
+        <input id="enroll-pw2" type="password" class="form-control mb-2" placeholder="Confirm password" data-i18n-ph="enroll_pw2_ph" autocomplete="new-password">
+        <input id="enroll-totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" data-i18n-ph="totp_ph" autocomplete="off">
+        <button id="enroll-btn" type="button" class="btn btn-thingino w-100" data-i18n="enroll_btn">Set up account</button>
       </form>
       <div class="small mt-2" id="enroll-msg"></div>
     </div>
@@ -66,76 +73,76 @@
 
 <div id="app" style="display:none;max-width:min(1280px,96vw);margin:0 auto;">
   <div class="d-flex align-items-center mb-3 flex-wrap gap-2">
-    <h1 class="fs-4 mb-0"><i class="bi bi-shield-lock me-1" style="color:darkorange"></i> Thingino Builder — Admin</h1>
+    <h1 class="fs-4 mb-0"><i class="bi bi-shield-lock me-1" style="color:darkorange"></i> <span data-i18n="app_title">Thingino Builder — Admin</span></h1>
     <span class="ms-auto small muted" id="updated"></span>
-    <button class="btn btn-outline-secondary btn-sm" id="logout">Sign out</button>
+    <button class="btn btn-outline-secondary btn-sm" id="logout" data-i18n="signout_btn">Sign out</button>
   </div>
 
   <div class="card mb-3"><div class="card-body d-flex align-items-center gap-3 flex-wrap">
-    <div>Builds are <span id="kill-state" class="fw-bold">…</span></div>
+    <div><span data-i18n="builds_are">Builds are</span> <span id="kill-state" class="fw-bold">…</span></div>
     <button id="kill-btn" class="btn btn-sm">…</button>
-    <button id="clearlogs-btn" class="btn btn-sm btn-outline-secondary">Clear logs</button>
-    <button id="clearbuilds-btn" class="btn btn-sm btn-outline-secondary">Clear finished builds</button>
-    <button id="resetlimits-btn" class="btn btn-sm btn-outline-secondary">Reset limits</button>
+    <button id="clearlogs-btn" class="btn btn-sm btn-outline-secondary" data-i18n="clear_logs">Clear logs</button>
+    <button id="clearbuilds-btn" class="btn btn-sm btn-outline-secondary" data-i18n="clear_builds">Clear finished builds</button>
+    <button id="resetlimits-btn" class="btn btn-sm btn-outline-secondary" data-i18n="reset_limits">Reset limits</button>
     <span class="small muted ms-auto" id="kill-extra"></span>
   </div></div>
 
   <div class="card mb-3"><div class="card-body d-flex align-items-center gap-3 flex-wrap">
-    <div>Version <code id="ver">…</code> <span id="upd-badge"></span></div>
-    <button id="upd-btn" class="btn btn-sm btn-thingino" style="display:none">Update now</button>
+    <div><span data-i18n="version_label">Version</span> <code id="ver">…</code> <span id="upd-badge"></span></div>
+    <button id="upd-btn" class="btn btn-sm btn-thingino" style="display:none" data-i18n="update_now">Update now</button>
     <span class="small muted ms-auto" id="upd-extra"></span>
   </div></div>
 
   <div class="card mb-3" id="users-card" style="display:none"><div class="card-body">
     <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-      <span class="small muted text-uppercase">Admin users</span>
+      <span class="small muted text-uppercase" data-i18n="users_title">Admin users</span>
       <div class="input-group input-group-sm ms-auto" style="max-width:340px">
-        <input id="invite-user" class="form-control" placeholder="new username">
-        <button id="invite-btn" class="btn btn-thingino">Invite</button>
+        <input id="invite-user" class="form-control" placeholder="new username" data-i18n-ph="invite_user_ph">
+        <button id="invite-btn" class="btn btn-thingino" data-i18n="invite_btn">Invite</button>
       </div>
     </div>
     <div id="invite-link" class="small mb-2"></div>
     <div class="table-responsive"><table class="table table-sm align-middle mb-0">
-      <thead><tr><th>username</th><th>state</th><th>last login</th><th>privileges</th><th></th></tr></thead>
+      <thead><tr><th data-i18n="th_username">username</th><th data-i18n="th_state">state</th><th data-i18n="th_last_login">last login</th><th data-i18n="th_privileges">privileges</th><th></th></tr></thead>
       <tbody id="users-body"></tbody>
     </table></div>
   </div></div>
 
   <div class="card mb-3"><div class="card-body">
     <div class="d-flex align-items-center gap-2 mb-2">
-      <span class="small muted text-uppercase">Limits</span>
-      <button id="limits-edit" class="btn btn-sm btn-outline-secondary ms-auto">Edit</button>
-      <button id="limits-save" class="btn btn-sm btn-thingino ms-auto" style="display:none">Save</button>
-      <button id="limits-cancel" class="btn btn-sm btn-outline-secondary" style="display:none">Cancel</button>
+      <span class="small muted text-uppercase" data-i18n="limits_title">Limits</span>
+      <button id="limits-edit" class="btn btn-sm btn-outline-secondary ms-auto" data-i18n="limits_edit">Edit</button>
+      <button id="limits-save" class="btn btn-sm btn-thingino ms-auto" style="display:none" data-i18n="limits_save">Save</button>
+      <button id="limits-cancel" class="btn btn-sm btn-outline-secondary" style="display:none" data-i18n="limits_cancel">Cancel</button>
       <span class="small muted" id="limits-msg"></span>
     </div>
     <div id="limits-view" class="small">…</div>
     <div id="limits-fields" class="row g-2" style="display:none">
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-user/hr</label><input id="lim-userHourly" type="number" min="1" class="form-control form-control-sm"></div>
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-IP/hr</label><input id="lim-ipHourly" type="number" min="1" class="form-control form-control-sm"></div>
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">global/hr</label><input id="lim-globalHourly" type="number" min="1" class="form-control form-control-sm"></div>
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">concurrent</label><input id="lim-maxConcurrent" type="number" min="1" class="form-control form-control-sm"></div>
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">queue</label><input id="lim-maxQueue" type="number" min="1" class="form-control form-control-sm"></div>
-      <div class="col-4 col-md-2"><label class="form-label small muted mb-0">retention (min)</label><input id="lim-retention" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_user_hourly">per-user/hr</label><input id="lim-userHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_ip_hourly">per-IP/hr</label><input id="lim-ipHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_global_hourly">global/hr</label><input id="lim-globalHourly" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_concurrent">concurrent</label><input id="lim-maxConcurrent" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_queue">queue</label><input id="lim-maxQueue" type="number" min="1" class="form-control form-control-sm"></div>
+      <div class="col-4 col-md-2"><label class="form-label small muted mb-0" data-i18n="lim_retention_field">retention (min)</label><input id="lim-retention" type="number" min="1" class="form-control form-control-sm"></div>
     </div>
   </div></div>
 
   <div class="row g-2 mb-3" id="tiles"></div>
 
   <div class="card mb-3">
-    <div class="card-header"><h2 class="card-title fs-6 mb-0"><i class="bi bi-list-ul me-1"></i> Recent builds</h2></div>
+    <div class="card-header"><h2 class="card-title fs-6 mb-0"><i class="bi bi-list-ul me-1"></i> <span data-i18n="recent_builds">Recent builds</span></h2></div>
     <div class="card-body p-0"><div class="table-responsive" style="max-height:320px;overflow:auto;">
       <table class="table table-sm table-dark mb-0 small"><thead><tr>
-        <th>build</th><th>defconfig</th><th>state</th><th>user</th><th>ip</th><th>created</th><th>duration</th><th>run</th>
+        <th data-i18n="th_build">build</th><th data-i18n="th_defconfig">defconfig</th><th data-i18n="th_state">state</th><th data-i18n="th_user">user</th><th data-i18n="th_ip">ip</th><th data-i18n="th_created">created</th><th data-i18n="th_duration">duration</th><th data-i18n="th_run">run</th>
       </tr></thead><tbody id="builds-body"></tbody></table>
     </div></div>
   </div>
 
   <div class="card">
-    <div class="card-header"><h2 class="card-title fs-6 mb-0"><i class="bi bi-journal-text me-1"></i> Recent events</h2></div>
+    <div class="card-header"><h2 class="card-title fs-6 mb-0"><i class="bi bi-journal-text me-1"></i> <span data-i18n="recent_events">Recent events</span></h2></div>
     <div class="card-body p-0"><div class="table-responsive" style="max-height:320px;overflow:auto;">
       <table class="table table-sm table-dark mb-0 small"><thead><tr>
-        <th>time</th><th>kind</th><th>build</th><th>user</th><th>ip</th><th>detail</th>
+        <th data-i18n="th_time">time</th><th data-i18n="th_kind">kind</th><th data-i18n="th_build">build</th><th data-i18n="th_user">user</th><th data-i18n="th_ip">ip</th><th data-i18n="th_detail">detail</th>
       </tr></thead><tbody id="events-body"></tbody></table>
     </div></div>
   </div>
@@ -143,6 +150,8 @@
 
 <script src="vendor/bootstrap.bundle.min.js"></script>
 <script src="vendor/qrcode.min.js"></script>
+<script src="i18n.js"></script>
+<script src="i18n-adm-en.js"></script>
 <script src="config.js"></script>
 <script src="admin.js"></script>
 </body>

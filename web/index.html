@@ -3,8 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.workers.dev; object-src 'none'; base-uri 'none'">
-  <title>thingino · Firmware Builder</title>
+  <!-- Don't cache the page shell, so a redeploy is picked up without a hard reload. GitHub Pages
+       ignores these (it serves max-age=600), so the network-first sw.js below is the real fix. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.workers.dev; worker-src 'self'; object-src 'none'; base-uri 'none'">
+  <script src="sw-register.js"></script>
+  <title data-i18n="page_title">thingino · Firmware Builder</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link href="vendor/bootstrap.min.css" rel="stylesheet">
@@ -27,29 +33,29 @@
     <div class="card mb-3">
       <div class="card-header d-flex align-items-center gap-2 flex-wrap">
         <h2 class="card-title mb-0 fs-5" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">
-          <i class="bi bi-cpu me-1"></i><span class="d-none d-sm-inline"> Thingino Firmware Builder</span><span class="d-sm-none"> Thingino Builder</span>
+          <i class="bi bi-cpu me-1"></i><span class="d-none d-sm-inline" data-i18n="header_full"> Thingino Firmware Builder</span><span class="d-sm-none" data-i18n="header_short"> Thingino Builder</span>
         </h2>
-        <span id="commit-badge" class="badge bg-info-subtle text-info border border-info-subtle ms-auto d-none" title="thingino commit being built"></span>
+        <span id="commit-badge" class="badge bg-info-subtle text-info border border-info-subtle ms-auto d-none" title="thingino commit being built" data-i18n-title="commit_badge_title"></span>
       </div>
 
       <div class="card-body">
-        <div id="stats" class="small muted mb-3"><span class="spinner-border spinner-border-sm me-1"></span>Connecting…</div>
+        <div id="stats" class="small muted mb-3"><span class="spinner-border spinner-border-sm me-1"></span><span data-i18n="connecting">Connecting…</span></div>
         <div id="banner" class="alert alert-warning py-2 small d-none"></div>
 
         <div id="picker">
-          <label class="form-label small muted mb-1" for="board">Camera defconfig</label>
+          <label class="form-label small muted mb-1" for="board" data-i18n="camera_label">Camera defconfig</label>
           <div class="input-group">
-            <input id="board" type="text" list="boards" class="form-control" autocomplete="off" spellcheck="false" placeholder="start typing, e.g. atom_cam2…">
+            <input id="board" type="text" list="boards" class="form-control" autocomplete="off" spellcheck="false" placeholder="start typing, e.g. atom_cam2…" data-i18n-ph="board_placeholder">
             <datalist id="boards"></datalist>
-            <button id="go" class="btn btn-thingino" disabled><i class="bi bi-hammer me-1"></i>Build</button>
+            <button id="go" class="btn btn-thingino" disabled><i class="bi bi-hammer me-1"></i><span data-i18n="build_btn">Build</span></button>
           </div>
-          <div class="form-text muted" id="hint">Loading camera list…</div>
+          <div class="form-text muted" id="hint" data-i18n="loading_cameras">Loading camera list…</div>
         </div>
 
         <div id="mybuild" class="d-none mt-1"></div>
       </div>
 
-      <div class="card-footer small muted">
+      <div class="card-footer small muted" data-i18n-html="footer_limits">
         Builds run on GitHub Actions (~20–40 min), so please be patient. User limits: <strong>2 builds/hour</strong> per user, <strong>6</strong> total at a time.
         Finished images are available to download for <strong>30 minutes</strong>, then they're removed.
       </div>
@@ -57,10 +63,12 @@
   </div>
 
   <p class="mt-2 small text-center muted">
-    <a href="https://github.com/thingino/thingino-web-builder" target="_blank" class="link-secondary text-decoration-none">thingino firmware builder</a> <span id="version"></span> · <a href="admin.html" class="link-secondary text-decoration-none"><i class="bi bi-shield-lock me-1"></i>admin</a>
+    <a href="https://github.com/thingino/thingino-web-builder" target="_blank" class="link-secondary text-decoration-none" data-i18n="footer_link">thingino firmware builder</a> <span id="version"></span> · <a href="admin.html" class="link-secondary text-decoration-none"><i class="bi bi-shield-lock me-1"></i><span data-i18n="admin_link">admin</span></a> · <span id="lang-slot"></span>
   </p>
 
   <script src="vendor/bootstrap.bundle.min.js"></script>
+  <script src="i18n.js"></script>
+  <script src="i18n-idx-en.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
