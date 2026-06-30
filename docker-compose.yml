@@ -12,16 +12,16 @@ services:
       IP_HEADER: "X-Real-IP"  # Caddy sets this to the true client; used for per-IP limits
     volumes:
       - broker-data:/data     # SQLite db + lock/pid persist here
-    expose:
-      - "8080"                # internal only; Caddy is the public entrypoint
+    ports:
+      - "127.0.0.1:8080:8080" # loopback only; reached by the host-networked Caddy
 
   caddy:
     image: caddy:2
     restart: unless-stopped
     depends_on: [broker]
-    ports:
-      - "80:80"
-      - "443:443"
+    # Host networking: Caddy binds the host's IPv4 AND IPv6 directly and sees the
+    # real client IP. Docker's bridge would publish IPv4 only and NAT the source.
+    network_mode: host
     environment:
       DOMAIN: "${DOMAIN}"
     volumes:

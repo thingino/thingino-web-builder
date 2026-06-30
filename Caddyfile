@@ -7,9 +7,10 @@
 {$DOMAIN} {
 	# tls /certs/cert.pem /certs/key.pem
 	encode gzip zstd
-	reverse_proxy broker:8080 {
+	reverse_proxy 127.0.0.1:8080 {
 		# Real client IP (spoof-proof: set from Caddy's own connection, not a
 		# client-supplied header) — the broker reads this for per-IP limits.
+		# With host networking, {remote_host} is the true v4/v6 client.
 		header_up X-Real-IP {remote_host}
 	}
 }
