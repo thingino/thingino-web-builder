@@ -1,8 +1,9 @@
-/broker/target/
+.git
+broker/target
 *.db
 *.db-journal
-secret.env
+*.db-wal
 broker.lock
 broker.pid
 .env
-/certs/
+certs

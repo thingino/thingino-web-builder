@@ -788,11 +788,11 @@ async fn current_commit(st: &AppState) -> Option<String> {
             }
         }
     }
+    // Public read — no auth, so a builder-repo-scoped token needs no extra access.
     let url = format!("https://api.github.com/repos/{}/commits/{}", st.cfg.thingino_repo, st.cfg.thingino_ref);
     let sha = match st
         .http
         .get(&url)
-        .bearer_auth(&st.cfg.github_token)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .send()

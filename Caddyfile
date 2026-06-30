@@ -1,0 +1,15 @@
+# Automatic HTTPS via Let's Encrypt for $DOMAIN — nothing to provide but a
+# domain whose DNS points at this VPS (ports 80 + 443 open).
+#
+# Bring your own certificate instead (e.g. Cloudflare origin cert, wildcard):
+#   1. put cert.pem + key.pem in ./certs
+#   2. uncomment the `tls` line below
+{$DOMAIN} {
+	# tls /certs/cert.pem /certs/key.pem
+	encode gzip zstd
+	reverse_proxy broker:8080 {
+		# Real client IP (spoof-proof: set from Caddy's own connection, not a
+		# client-supplied header) — the broker reads this for per-IP limits.
+		header_up X-Real-IP {remote_host}
+	}
+}
