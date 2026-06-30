@@ -252,20 +252,16 @@ async function handleStatus(id, env) {
   const ready = state === "done";
   return json({ build_id: id, defconfig: b.defconfig, state, ready, position, elapsed_secs: elapsed, download_url: ready ? assetUrl(env, id) : null }, 200, env);
 }
-async function handleCancel(id, request, env) {
-  if (!validBuildId(id)) return json({ error: "bad build_id" }, 400, env);
-  const uid = resolveUid(request);
-  const b = await env.DB.prepare("SELECT uid,state,run_id FROM builds WHERE id=?").bind(id).first();
-  if (!b) return json({ error: "unknown build" }, 404, env);
-  if (b.uid !== uid) return json({ error: "not your build" }, 403, env);
+// Shared cancel: queued → cancelled; running → cancel_requested + stop the GitHub
+// run inline if we can find it (the cron retries otherwise). Returns the new state.
+async function doCancel(env, b, id, uid) {
   if (b.state === "queued") {
     await env.DB.prepare("UPDATE builds SET state='cancelled', finished_ts=? WHERE id=?").bind(nowSec(), id).run();
     await logEvent(env, "cancelled", id, uid, null, "cancelled while queued");
-    return json({ state: "cancelled" }, 200, env);
+    return "cancelled";
   }
   if (b.state === "running") {
     await env.DB.prepare("UPDATE builds SET cancel_requested=1 WHERE id=?").bind(id).run();
-    // Stop the GitHub run NOW if we can find it, rather than waiting for the cron.
     let note = "cancel queued (run not yet listed)";
     try {
       const runs = await fetchRuns(env);
@@ -277,9 +273,39 @@ async function handleCancel(id, request, env) {
       }
     } catch (_) { /* cron will retry */ }
     await logEvent(env, "cancel_requested", id, uid, null, note);
-    return json({ state: "cancelling" }, 200, env);
+    return "cancelling";
   }
-  return json({ state: "already finished" }, 200, env);
+  return "already finished";
+}
+async function handleCancel(id, request, env) {
+  if (!validBuildId(id)) return json({ error: "bad build_id" }, 400, env);
+  const uid = resolveUid(request);
+  const b = await env.DB.prepare("SELECT uid,state,run_id FROM builds WHERE id=?").bind(id).first();
+  if (!b) return json({ error: "unknown build" }, 404, env);
+  if (b.uid !== uid) return json({ error: "not your build" }, 403, env);
+  return json({ state: await doCancel(env, b, id, uid) }, 200, env);
+}
+async function handleAdminCancel(id, request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  if (!validBuildId(id)) return json({ error: "bad build_id" }, 400, env);
+  const b = await env.DB.prepare("SELECT uid,state,run_id FROM builds WHERE id=?").bind(id).first();
+  if (!b) return json({ error: "unknown build" }, 404, env);
+  await logEvent(env, "admin_cancel", id, b.uid, null, `admin cancelled (was ${b.state})`);
+  return json({ state: await doCancel(env, b, id, b.uid) }, 200, env);
+}
+// Admin: remove a finished build's artifact + Actions run early (the reaper's job, on demand).
+async function handleAdminExpire(id, request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  if (!validBuildId(id)) return json({ error: "bad build_id" }, 400, env);
+  const b = await env.DB.prepare("SELECT uid,state,run_id FROM builds WHERE id=?").bind(id).first();
+  if (!b) return json({ error: "unknown build" }, 404, env);
+  if (!["done", "failed", "cancelled"].includes(b.state)) return json({ error: "build is not finished" }, 400, env);
+  const assetOk = b.state === "done" ? await deleteReleaseAssets(env, id) : true;
+  const runOk = b.run_id ? await deleteRun(env, b.run_id) : true;
+  if (!(assetOk && runOk)) return json({ error: "GitHub cleanup failed; the cron will retry" }, 502, env);
+  await env.DB.prepare("UPDATE builds SET state='expired' WHERE id=?").bind(id).run();
+  await logEvent(env, "expired", id, b.uid, null, "admin removed early");
+  return json({ ok: true, state: "expired" }, 200, env);
 }
 
 // ---- scheduler (cron) -----------------------------------------------------
@@ -547,6 +573,8 @@ export default {
       let m;
       if ((m = p.match(/^\/api\/status\/(.+)$/)) && request.method === "GET") return await handleStatus(m[1], env);
       if ((m = p.match(/^\/api\/cancel\/(.+)$/)) && request.method === "POST") return await handleCancel(m[1], request, env);
+      if ((m = p.match(/^\/api\/admin\/cancel\/(.+)$/)) && request.method === "POST") return await handleAdminCancel(m[1], request, env);
+      if ((m = p.match(/^\/api\/admin\/expire\/(.+)$/)) && request.method === "POST") return await handleAdminExpire(m[1], request, env);
       if (p === "/api/admin/login" && request.method === "POST") return await handleAdminLogin(request, env);
       if (p === "/api/admin/stats" && request.method === "GET") return await handleAdminStats(request, env);
       if (p === "/api/admin/toggle" && request.method === "POST") return await handleAdminToggle(request, env);
