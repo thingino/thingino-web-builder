@@ -21,6 +21,10 @@ hmac = "0.12"
 sha1 = "0.10"
 jsonwebtoken = "9"
 parking_lot = "0.12"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
 
 [profile.release]
 opt-level = "z"

@@ -31,10 +31,11 @@ use std::{
 use parking_lot::Mutex;
 
 use axum::{
+    body::Bytes,
     extract::{ConnectInfo, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -96,7 +97,7 @@ struct AppState {
     http: reqwest::Client,
     cfg: Arc<Config>,
     thingino: Arc<Mutex<Thingino>>,
-    sessions: Arc<Mutex<std::collections::HashMap<String, i64>>>,
+    sessions: Arc<Mutex<std::collections::HashMap<String, (String, i64)>>>,
     installation_token: Arc<Mutex<(Option<String>, i64)>>,
     latest_release: Arc<Mutex<(Option<String>, i64)>>,
 }
@@ -232,6 +233,7 @@ fn builds_enabled(conn: &Connection) -> bool {
     get_setting(conn, "builds_enabled").map(|v| v != "0").unwrap_or(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_event(
     conn: &Connection,
     kind: &str,
@@ -239,10 +241,11 @@ fn log_event(
     uid: Option<&str>,
     ip: Option<&str>,
     detail: &str,
+    ip_full: Option<&str>,
 ) {
     let _ = conn.execute(
-        "INSERT INTO events(ts, kind, build_id, uid, ip_bucket, detail) VALUES (?1,?2,?3,?4,?5,?6)",
-        rusqlite::params![now(), kind, build_id, uid, ip, detail],
+        "INSERT INTO events(ts, kind, build_id, uid, ip_bucket, ip_full, detail) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        rusqlite::params![now(), kind, build_id, uid, ip, ip_full, detail],
     );
     tracing::info!("event {kind}: {detail}");
 }
@@ -261,14 +264,27 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|s| s.strip_prefix("Bearer "))
 }
 
-/// Admin requests authenticate with a session token minted by /api/admin/login
-/// (which requires the admin token + a valid TOTP code when 2FA is configured).
-fn session_ok(headers: &HeaderMap, st: &AppState) -> bool {
-    let Some(tok) = bearer(headers) else { return false; };
+/// Admin requests authenticate with a session token minted by /api/admin/login.
+/// Returns the session's admin identity ("master" for the break-glass token, else
+/// a username), or None when the token is missing/expired/unknown.
+fn session_admin(headers: &HeaderMap, st: &AppState) -> Option<String> {
+    let tok = bearer(headers)?;
     let now_ts = now();
     let mut s = st.sessions.lock();
-    s.retain(|_, exp| *exp > now_ts);
-    s.get(tok).map(|&exp| exp > now_ts).unwrap_or(false)
+    s.retain(|_, (_, exp)| *exp > now_ts);
+    s.get(tok).filter(|(_, exp)| *exp > now_ts).map(|(id, _)| id.clone())
+}
+fn session_ok(headers: &HeaderMap, st: &AppState) -> bool {
+    session_admin(headers, st).is_some()
+}
+/// Gate a master-only endpoint: returns `Some(error response)` for any non-master
+/// identity (including unauthenticated), matching the Worker's `!== "master"` check;
+/// `None` means the caller is the master and may proceed.
+fn require_master(headers: &HeaderMap, st: &AppState) -> Option<Response> {
+    match session_admin(headers, st) {
+        Some(id) if id == "master" => None,
+        _ => Some(json_err(StatusCode::FORBIDDEN, "master token required")),
+    }
 }
 
 // ---- TOTP (RFC 6238, Google Authenticator compatible) --------------------
@@ -316,6 +332,177 @@ fn totp_check(secret_b32: &str, code: &str) -> bool {
     let Ok(want) = code.parse::<u32>() else { return false; };
     let step = (now() as u64) / 30;
     [step.wrapping_sub(1), step, step + 1].iter().any(|&c| hotp(&secret, c) == want)
+}
+
+// ---- account crypto (passwords, TOTP secrets, invite tokens) --------------
+
+/// RFC4648 base32 encode, no padding (matches the Worker's base32Encode), used to
+/// render a freshly-generated TOTP secret for the authenticator app.
+fn base32_encode(bytes: &[u8]) -> String {
+    const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut bits = 0u32;
+    let mut val = 0u32;
+    let mut out = String::new();
+    for &b in bytes {
+        val = (val << 8) | b as u32;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHA[((val >> bits) & 31) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPHA[((val << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+fn rand_bytes(n: usize) -> Vec<u8> {
+    let mut v = vec![0u8; n];
+    getrandom::getrandom(&mut v).expect("getrandom");
+    v
+}
+/// Invite token: 24 random bytes, hex-encoded (matches the Worker's randToken).
+fn rand_token() -> String {
+    rand_bytes(24).iter().map(|b| format!("{b:02x}")).collect()
+}
+/// A fresh base32 TOTP secret from 20 random bytes (matches the Worker's newTotpSecret).
+fn new_totp_secret() -> String {
+    base32_encode(&rand_bytes(20))
+}
+
+const PBKDF2_ITERS: u32 = 100_000;
+fn pbkdf2_sha256(password: &[u8], salt: &[u8], iters: u32) -> [u8; 32] {
+    use pbkdf2::pbkdf2_hmac;
+    use sha2::Sha256;
+    let mut out = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(password, salt, iters, &mut out);
+    out
+}
+/// Stored as "iters.saltB64.hashB64" (PBKDF2-HMAC-SHA256, standard base64 with
+/// padding) so the work factor can change without breaking old hashes — byte-for-byte
+/// the same format the Worker writes (btoa = standard base64).
+fn hash_password(password: &str) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let salt = rand_bytes(16);
+    let hash = pbkdf2_sha256(password.as_bytes(), &salt, PBKDF2_ITERS);
+    format!("{}.{}.{}", PBKDF2_ITERS, STANDARD.encode(&salt), STANDARD.encode(hash))
+}
+fn verify_password(password: &str, stored: &str) -> bool {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let parts: Vec<&str> = stored.split('.').collect();
+    if parts.len() != 3 || parts[0].is_empty() || parts[1].is_empty() || parts[2].is_empty() {
+        return false;
+    }
+    let Ok(iters) = parts[0].parse::<u32>() else { return false; };
+    let Ok(salt) = STANDARD.decode(parts[1]) else { return false; };
+    let recomputed = STANDARD.encode(pbkdf2_sha256(password.as_bytes(), &salt, iters));
+    // Compare the recomputed base64 string to the stored one, like the Worker's ctEq.
+    constant_time_eq(recomputed.as_bytes(), parts[2].as_bytes())
+}
+
+/// `^[a-z0-9_.-]{3,32}$` — the admin username charset (validated after lowercasing).
+fn valid_username(s: &str) -> bool {
+    let n = s.len();
+    (3..=32).contains(&n)
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.' || c == '-')
+}
+
+/// encodeURIComponent-equivalent (escapes everything outside the JS unreserved set),
+/// so the otpauth URL is byte-identical to the Worker's.
+fn encode_uri_component(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+/// otpauth:// URL for the invitee's authenticator (matches the Worker's inviteOtpauth).
+fn invite_otpauth(username: &str, secret: &str) -> String {
+    let issuer = "thingino web-builder";
+    format!(
+        "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
+        encode_uri_component(issuer),
+        encode_uri_component(username),
+        secret,
+        encode_uri_component(issuer),
+    )
+}
+
+// ---- runtime limits (env defaults + D1/SQLite override) -------------------
+
+/// Effective rate-limit knobs: the env/Config defaults, with the admin-set `limits`
+/// JSON setting layered on top (matches the Worker's `limits(env)`).
+#[derive(Clone, Copy)]
+struct Limits {
+    user_hourly: i64,
+    ip_hourly: i64,
+    global_hourly: i64,
+    max_concurrent: i64,
+    max_queue: i64,
+    retention: i64,
+    failed_retention: i64,
+    build_timeout: i64,
+}
+
+fn effective_limits(conn: &Connection, cfg: &Config) -> Limits {
+    let mut l = Limits {
+        user_hourly: cfg.per_user_hourly,
+        ip_hourly: cfg.per_ip_hourly,
+        global_hourly: cfg.global_hourly,
+        max_concurrent: cfg.max_concurrent,
+        max_queue: cfg.max_queue,
+        retention: cfg.retention_secs,
+        failed_retention: cfg.failed_retention_secs,
+        build_timeout: cfg.build_timeout_secs,
+    };
+    if let Some(ov) = get_setting(conn, "limits") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ov) {
+            let g = |key: &str| v.get(key).and_then(serde_json::Value::as_i64);
+            if let Some(n) = g("userHourly") { l.user_hourly = n; }
+            if let Some(n) = g("ipHourly") { l.ip_hourly = n; }
+            if let Some(n) = g("globalHourly") { l.global_hourly = n; }
+            if let Some(n) = g("maxConcurrent") { l.max_concurrent = n; }
+            if let Some(n) = g("maxQueue") { l.max_queue = n; }
+            if let Some(n) = g("retention") { l.retention = n; }
+            if let Some(n) = g("failedRetention") { l.failed_retention = n; }
+            if let Some(n) = g("buildTimeout") { l.build_timeout = n; }
+        }
+    }
+    l
+}
+
+/// JS `parseInt(x, 10)`-equivalent over a JSON value (number truncated toward zero,
+/// or a leading-integer parse of a string), used to validate the `limits` POST body.
+fn js_parse_int(v: &serde_json::Value) -> Option<i64> {
+    if let Some(n) = v.as_i64() {
+        return Some(n);
+    }
+    if let Some(f) = v.as_f64() {
+        return if f.is_finite() { Some(f.trunc() as i64) } else { None };
+    }
+    if let Some(s) = v.as_str() {
+        let t = s.trim_start();
+        let bytes = t.as_bytes();
+        let mut i = 0;
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            i += 1;
+        }
+        let digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits_start {
+            return None;
+        }
+        return t[..i].parse::<i64>().ok();
+    }
+    None
 }
 
 // ---- main -----------------------------------------------------------------
@@ -401,6 +588,7 @@ async fn main() -> anyhow::Result<()> {
             id TEXT PRIMARY KEY,
             uid TEXT NOT NULL,
             ip_bucket TEXT NOT NULL,
+            ip_full TEXT,
             defconfig TEXT NOT NULL,
             state TEXT NOT NULL,
             run_id INTEGER,
@@ -421,12 +609,28 @@ async fn main() -> anyhow::Result<()> {
             build_id TEXT,
             uid TEXT,
             ip_bucket TEXT,
+            ip_full TEXT,
             detail TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
-        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS admins(
+            username TEXT PRIMARY KEY,
+            pw_hash TEXT,
+            totp_secret TEXT NOT NULL,
+            invite_token TEXT,
+            invite_expires INTEGER,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created_ts INTEGER NOT NULL,
+            created_by TEXT,
+            last_login INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_admins_invite ON admins(invite_token);",
     )?;
-    let _ = conn.execute("ALTER TABLE builds ADD COLUMN commit_sha TEXT", []); // migrate older DBs
+    // Idempotent migrations for older DBs (swallow the "duplicate column" error on re-run).
+    let _ = conn.execute("ALTER TABLE builds ADD COLUMN commit_sha TEXT", []);
+    let _ = conn.execute("ALTER TABLE builds ADD COLUMN ip_full TEXT", []);
+    let _ = conn.execute("ALTER TABLE events ADD COLUMN ip_full TEXT", []);
 
     let http = reqwest::Client::builder()
         .user_agent("thingino-web-builder-broker")
@@ -460,10 +664,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/build", post(post_build))
         .route("/api/status/{build_id}", get(get_status))
         .route("/api/cancel/{build_id}", post(post_cancel))
+        .route("/api/admin/cancel/{build_id}", post(admin_cancel))
+        .route("/api/admin/expire/{build_id}", post(admin_expire))
         .route("/api/admin/login", post(admin_login))
         .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/toggle", post(admin_toggle))
+        .route("/api/admin/clear-logs", post(admin_clear_logs))
+        .route("/api/admin/reset-limits", post(admin_reset_limits))
+        .route("/api/admin/limits", post(admin_limits))
         .route("/api/admin/update", post(admin_update))
+        .route("/api/admin/users", post(admin_invite).get(admin_list_users))
+        .route("/api/admin/users/{username}", delete(admin_delete_user))
+        .route("/api/admin/users/{username}/disable", post(admin_disable_user))
+        .route("/api/admin/invite/{token}", get(admin_get_invite))
+        .route("/api/admin/accept-invite", post(admin_accept_invite))
         .route("/api/admin/logout", post(admin_logout))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state);
@@ -509,6 +723,7 @@ async fn get_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
     let now_ts = now();
     let commit = current_commit(&st).await;
     let conn = st.db.lock();
+    let max_concurrent = effective_limits(&conn, &st.cfg).max_concurrent;
     let running: i64 = conn.query_row("SELECT count(*) FROM builds WHERE state='running'", [], |r| r.get(0)).unwrap_or(0);
     let queued: i64 = conn.query_row("SELECT count(*) FROM builds WHERE state='queued'", [], |r| r.get(0)).unwrap_or(0);
     let avg: Option<f64> = conn
@@ -527,7 +742,7 @@ async fn get_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
         json!({
             "running": running,
             "queued": queued,
-            "max_concurrent": st.cfg.max_concurrent,
+            "max_concurrent": max_concurrent,
             "avg_build_secs": avg.map(|v| v.round() as i64),
             "builds_enabled": enabled,
             "commit": commit,
@@ -555,9 +770,10 @@ async fn post_build(
         return json_err(StatusCode::BAD_REQUEST, "unknown defconfig");
     }
     let uid = resolve_uid(&headers);
-    let ip = ip_bucket(client_ip(&headers, peer, &st.cfg.ip_header));
+    let client = client_ip(&headers, peer, &st.cfg.ip_header);
+    let ip_full = client.to_string();
+    let ip = ip_bucket(client);
     let now_ts = now();
-    let cutoff = now_ts - WINDOW_SECS;
     let build_id = Uuid::new_v4().to_string();
     let commit = thingino.commit.clone();
 
@@ -566,10 +782,14 @@ async fn post_build(
         if !builds_enabled(&conn) {
             return json_uid(StatusCode::SERVICE_UNAVAILABLE, &uid, json!({"error": "builds are temporarily disabled"}));
         }
+        let lim = effective_limits(&conn, &st.cfg);
+        // Hourly window, but never count builds created before an admin "reset limits".
+        let reset_ts = get_setting(&conn, "limits_reset_ts").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let cutoff = (now_ts - WINDOW_SECS).max(reset_ts);
         // Dedup: same (defconfig, commit) already built (within retention) or in flight → reuse it.
         if let Some(c) = commit.as_deref() {
-            if let Some((eid, estate, edl)) = find_existing(&conn, &defconfig, c, now_ts - st.cfg.retention_secs, &st.cfg) {
-                log_event(&conn, "dedup", Some(&eid), Some(&uid), Some(&ip), &format!("reused {estate} for {defconfig}"));
+            if let Some((eid, estate, edl)) = find_existing(&conn, &defconfig, c, now_ts - lim.retention, &st.cfg) {
+                log_event(&conn, "dedup", Some(&eid), Some(&uid), Some(&ip), &format!("reused {estate} for {defconfig}"), Some(&ip_full));
                 return json_uid(StatusCode::OK, &uid, json!({
                     "build_id": eid,
                     "defconfig": defconfig,
@@ -582,7 +802,7 @@ async fn post_build(
             }
         }
         let queued_now: i64 = conn.query_row("SELECT count(*) FROM builds WHERE state='queued'", [], |r| r.get(0)).unwrap_or(0);
-        if queued_now >= st.cfg.max_queue {
+        if queued_now >= lim.max_queue {
             return json_uid(StatusCode::SERVICE_UNAVAILABLE, &uid, json!({"error": "the build queue is full, try again shortly"}));
         }
         // Global hourly cap across everyone (counts builds that actually got going).
@@ -593,9 +813,9 @@ async fn post_build(
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        if global_n >= st.cfg.global_hourly {
-            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "global hourly limit");
-            return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": format!("the builder is at its hourly limit ({}/hr) — try again later", st.cfg.global_hourly)}));
+        if global_n >= lim.global_hourly {
+            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "global hourly limit", Some(&ip_full));
+            return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": format!("the builder is at its hourly limit ({}/hr) — try again later", lim.global_hourly)}));
         }
         // Per-user cap. NB: uid is client-supplied, so this is a soft/UX limit — the
         // per-IP and global caps are the real enforcement. Builds count toward a limit
@@ -607,9 +827,9 @@ async fn post_build(
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        if user_n >= st.cfg.per_user_hourly {
-            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "per-user hourly limit");
-            return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": format!("you've reached {} builds this hour — try again later", st.cfg.per_user_hourly)}));
+        if user_n >= lim.user_hourly {
+            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "per-user hourly limit", Some(&ip_full));
+            return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": format!("you've reached {} builds this hour — try again later", lim.user_hourly)}));
         }
         let ip_n: i64 = conn
             .query_row(
@@ -618,18 +838,18 @@ async fn post_build(
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        if ip_n >= st.cfg.per_ip_hourly {
-            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "per-ip hourly limit");
+        if ip_n >= lim.ip_hourly {
+            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "per-ip hourly limit", Some(&ip_full));
             return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": "too many builds from your network this hour — try again later"}));
         }
         if let Err(e) = conn.execute(
-            "INSERT INTO builds(id, uid, ip_bucket, defconfig, state, created_ts, commit_sha) VALUES (?1,?2,?3,?4,'queued',?5,?6)",
-            rusqlite::params![build_id, uid, ip, defconfig, now_ts, commit],
+            "INSERT INTO builds(id, uid, ip_bucket, ip_full, defconfig, state, created_ts, commit_sha) VALUES (?1,?2,?3,?4,?5,'queued',?6,?7)",
+            rusqlite::params![build_id, uid, ip, ip_full, defconfig, now_ts, commit],
         ) {
             tracing::error!("insert failed: {e}");
             return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
-        log_event(&conn, "queued", Some(&build_id), Some(&uid), Some(&ip), &defconfig);
+        log_event(&conn, "queued", Some(&build_id), Some(&uid), Some(&ip), &defconfig, Some(&ip_full));
         conn.query_row("SELECT count(*) FROM builds WHERE state='queued'", [], |r| r.get(0)).unwrap_or(1)
     };
 
@@ -694,50 +914,88 @@ async fn get_status(State(st): State<AppState>, Path(build_id): Path<String>) ->
     .into_response()
 }
 
+/// Shared cancel logic: queued → cancelled; running → set cancel_requested and try to
+/// stop the GitHub run inline (the scheduler retries otherwise). Returns the new state.
+/// Mirrors the Worker's doCancel.
+async fn do_cancel(st: &AppState, id: &str, state: &str, run_id: Option<i64>, uid: Option<&str>) -> String {
+    let now_ts = now();
+    if state == "queued" {
+        let conn = st.db.lock();
+        conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
+        log_event(&conn, "cancelled", Some(id), uid, None, "cancelled while queued", None);
+        return "cancelled".to_string();
+    }
+    if state == "running" {
+        {
+            let conn = st.db.lock();
+            conn.execute("UPDATE builds SET cancel_requested=1 WHERE id=?1", [id]).ok();
+        }
+        // Try to stop the run now; if the runs list doesn't show it yet, the scheduler retries.
+        let mut note = "cancel queued (run not yet listed)";
+        if let Ok(runs) = fetch_runs(st).await {
+            if let Some(m) = runs.iter().find(|r| run_id.map(|rid| rid == r.run_id).unwrap_or(false) || r.name.contains(id)) {
+                let _ = cancel_run(st, m.run_id).await;
+                let conn = st.db.lock();
+                conn.execute("UPDATE builds SET run_id=?2 WHERE id=?1", rusqlite::params![id, m.run_id]).ok();
+                note = "cancel sent to run";
+            }
+        }
+        let conn = st.db.lock();
+        log_event(&conn, "cancel_requested", Some(id), uid, None, note, None);
+        return "cancelling".to_string();
+    }
+    "already finished".to_string()
+}
+
 async fn post_cancel(State(st): State<AppState>, headers: HeaderMap, Path(build_id): Path<String>) -> Response {
     if !valid_build_id(&build_id) {
         return json_err(StatusCode::BAD_REQUEST, "bad build_id");
     }
     let uid = resolve_uid(&headers);
-    let now_ts = now();
-    let conn = st.db.lock();
-    let row = conn
-        .query_row("SELECT uid, state FROM builds WHERE id=?1", [&build_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .optional().ok().flatten();
-    match row {
-        None => json_err(StatusCode::NOT_FOUND, "unknown build"),
-        Some((owner, _)) if owner != uid => json_err(StatusCode::FORBIDDEN, "not your build"),
-        Some((_, state)) if state == "queued" => {
-            conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![build_id, now_ts]).ok();
-            log_event(&conn, "cancelled", Some(&build_id), Some(&uid), None, "cancelled while queued");
-            json_uid(StatusCode::OK, &uid, json!({"state": "cancelled"}))
-        }
-        Some((_, state)) if state == "running" => {
-            conn.execute("UPDATE builds SET cancel_requested=1 WHERE id=?1", [&build_id]).ok();
-            log_event(&conn, "cancel_requested", Some(&build_id), Some(&uid), None, "cancel requested while running");
-            json_uid(StatusCode::OK, &uid, json!({"state": "cancelling"}))
-        }
-        Some(_) => json_uid(StatusCode::OK, &uid, json!({"state": "already finished"})),
+    let row = {
+        let conn = st.db.lock();
+        conn.query_row("SELECT uid, state, run_id FROM builds WHERE id=?1", [&build_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
+        })
+        .optional().ok().flatten()
+    };
+    let Some((owner, state, run_id)) = row else {
+        return json_err(StatusCode::NOT_FOUND, "unknown build");
+    };
+    if owner != uid {
+        return json_err(StatusCode::FORBIDDEN, "not your build");
     }
+    let new_state = do_cancel(&st, &build_id, &state, run_id, Some(&uid)).await;
+    json_uid(StatusCode::OK, &uid, json!({ "state": new_state }))
 }
 
 // ---- admin ----------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct LoginReq {
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
     token: String,
     #[serde(default)]
     totp: String,
 }
 
-/// Exchange the admin token (+ TOTP code when 2FA is configured) for a session token.
+/// Exchange credentials for a session token. Two paths, matching the Worker: a named
+/// admin (username + password (PBKDF2) + that user's own TOTP), or master break-glass
+/// (the ADMIN_TOKEN + the master TOTP secret). On success the session carries the
+/// identity ("master" or the username).
 async fn admin_login(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<LoginReq>,
 ) -> Response {
-    let ip = ip_bucket(client_ip(&headers, peer, &st.cfg.ip_header));
+    let client = client_ip(&headers, peer, &st.cfg.ip_header);
+    let ip_full = client.to_string();
+    let ip = ip_bucket(client);
     // Throttle brute force: too many recent failures from this IP bucket → reject early.
     {
         let conn = st.db.lock();
@@ -749,50 +1007,99 @@ async fn admin_login(
             )
             .unwrap_or(0);
         if fails >= LOGIN_FAIL_MAX {
-            log_event(&conn, "admin_login_throttled", None, None, Some(&ip), "too many failed logins");
+            log_event(&conn, "admin_login_throttled", None, None, Some(&ip), "too many failed logins", Some(&ip_full));
             return json_err(StatusCode::TOO_MANY_REQUESTS, "too many attempts — try again later");
         }
     }
-    let Some(admin_token) = st.cfg.admin_token.as_deref() else {
-        return json_err(StatusCode::SERVICE_UNAVAILABLE, "admin is disabled");
+    let totp = body.totp.trim();
+    let username = body.username.as_deref().filter(|s| !s.is_empty());
+    let identity: Option<String> = if let Some(uname) = username {
+        // Named admin: username + password + their own TOTP (all enforced).
+        let u = uname.to_lowercase();
+        let row = {
+            let conn = st.db.lock();
+            conn.query_row(
+                "SELECT pw_hash, totp_secret, disabled FROM admins WHERE username=?1",
+                [&u],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+            )
+            .optional().ok().flatten()
+        };
+        match row {
+            Some((Some(pw_hash), totp_secret, disabled))
+                if disabled == 0 && verify_password(&body.password, &pw_hash) && totp_check(&totp_secret, totp) =>
+            {
+                let conn = st.db.lock();
+                conn.execute("UPDATE admins SET last_login=?2 WHERE username=?1", rusqlite::params![u, now()]).ok();
+                Some(u)
+            }
+            _ => None,
+        }
+    } else if let (Some(admin_token), Some(secret)) = (st.cfg.admin_token.as_deref(), st.cfg.admin_totp_secret.as_deref()) {
+        // Master break-glass: token + master TOTP (env secrets, independent of the DB).
+        if constant_time_eq(body.token.as_bytes(), admin_token.as_bytes()) && totp_check(secret, totp) {
+            Some("master".to_string())
+        } else {
+            None
+        }
+    } else {
+        None
     };
-    // 2FA is mandatory: no TOTP secret configured → admin is unavailable.
-    let Some(secret) = st.cfg.admin_totp_secret.as_deref() else {
-        return json_err(StatusCode::SERVICE_UNAVAILABLE, "admin 2FA is not configured");
-    };
-    // One unified failure (don't reveal which factor was wrong).
-    let ok = constant_time_eq(body.token.as_bytes(), admin_token.as_bytes()) && totp_check(secret, body.totp.trim());
-    if !ok {
+
+    let Some(identity) = identity else {
         let conn = st.db.lock();
-        log_event(&conn, "admin_login_fail", None, None, Some(&ip), "bad token or 2FA");
+        let detail = match username {
+            Some(u) => format!("bad login ({})", u.to_lowercase()),
+            None => "bad token or 2FA".to_string(),
+        };
+        log_event(&conn, "admin_login_fail", None, None, Some(&ip), &detail, Some(&ip_full));
         return json_err(StatusCode::UNAUTHORIZED, "invalid credentials");
-    }
+    };
+
     let session = Uuid::new_v4().to_string();
-    st.sessions.lock().insert(session.clone(), now() + SESSION_TTL_SECS);
+    st.sessions.lock().insert(session.clone(), (identity.clone(), now() + SESSION_TTL_SECS));
     {
         let conn = st.db.lock();
-        log_event(&conn, "admin_login_ok", None, None, Some(&ip), "session created");
+        log_event(&conn, "admin_login_ok", None, None, Some(&ip), &format!("session created ({identity})"), Some(&ip_full));
     }
-    Json(json!({ "session": session, "expires_in": SESSION_TTL_SECS, "totp": true })).into_response()
+    let master = identity == "master";
+    Json(json!({ "session": session, "expires_in": SESSION_TTL_SECS, "admin": identity, "master": master })).into_response()
 }
 
 async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
-    if !session_ok(&headers, &st) {
+    let Some(me) = session_admin(&headers, &st) else {
         return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
-    }
+    };
+    let master = me == "master";
     let current = version_string();
     let latest = check_latest_release(&st).await;
     let update_available = latest.as_ref().is_some_and(|l| l != &current);
+    let now_ts = now();
     let conn = st.db.lock();
+    let lim = effective_limits(&conn, &st.cfg);
     let mut counts = serde_json::Map::new();
+    let mut running_n = 0i64;
+    let mut queued_n = 0i64;
     for s in ["queued", "running", "done", "failed", "cancelled", "expired"] {
         let n: i64 = conn.query_row("SELECT count(*) FROM builds WHERE state=?1", [s], |r| r.get(0)).unwrap_or(0);
+        if s == "running" { running_n = n; }
+        if s == "queued" { queued_n = n; }
         counts.insert(s.to_string(), json!(n));
     }
-    let last24: i64 = conn.query_row("SELECT count(*) FROM builds WHERE created_ts > ?1", [now() - DAY_SECS], |r| r.get(0)).unwrap_or(0);
+    let last24: i64 = conn.query_row("SELECT count(*) FROM builds WHERE created_ts > ?1", [now_ts - DAY_SECS], |r| r.get(0)).unwrap_or(0);
     let avg: Option<f64> = conn
         .query_row("SELECT avg(finished_ts - dispatched_ts) FROM builds WHERE state='done' AND finished_ts IS NOT NULL AND dispatched_ts IS NOT NULL", [], |r| r.get(0))
         .optional().ok().flatten();
+    // Builds counted against the global hourly cap in the current (post-reset) window.
+    let reset_ts = get_setting(&conn, "limits_reset_ts").and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let usage_cutoff = (now_ts - WINDOW_SECS).max(reset_ts);
+    let usage_global: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM builds WHERE created_ts > ?1 AND NOT (state='cancelled' AND dispatched_ts IS NULL)",
+            [usage_cutoff],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let recent_builds = query_recent_builds(&conn, 25);
     let recent_events = query_recent_events(&conn, 60);
     let enabled = builds_enabled(&conn);
@@ -802,13 +1109,28 @@ async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Response
         "counts": counts,
         "last24h": last24,
         "avg_build_secs": avg.map(|v| v.round() as i64),
-        "max_concurrent": st.cfg.max_concurrent,
-        "retention_secs": st.cfg.retention_secs,
+        "max_concurrent": lim.max_concurrent,
+        "retention_secs": lim.retention,
         "recent_builds": recent_builds,
         "recent_events": recent_events,
         "version": current,
         "latest_version": latest,
         "update_available": update_available,
+        "limits": {
+            "userHourly": lim.user_hourly,
+            "ipHourly": lim.ip_hourly,
+            "globalHourly": lim.global_hourly,
+            "maxConcurrent": lim.max_concurrent,
+            "maxQueue": lim.max_queue,
+            "retention": lim.retention,
+        },
+        "usage": {
+            "globalHourly": usage_global,
+            "maxConcurrent": running_n,
+            "maxQueue": queued_n,
+        },
+        "me": me,
+        "master": master,
     }))
     .into_response()
 }
@@ -824,7 +1146,7 @@ async fn admin_toggle(State(st): State<AppState>, headers: HeaderMap, Json(body)
     }
     let conn = st.db.lock();
     set_setting(&conn, "builds_enabled", if body.enabled { "1" } else { "0" });
-    log_event(&conn, "admin_toggle", None, None, None, &format!("builds_enabled={}", body.enabled));
+    log_event(&conn, "admin_toggle", None, None, None, &format!("builds_enabled={}", body.enabled), None);
     drop(conn);
     Json(json!({ "builds_enabled": body.enabled })).into_response()
 }
@@ -842,7 +1164,7 @@ async fn admin_update(State(st): State<AppState>, headers: HeaderMap) -> Respons
     match std::fs::write(path, "update\n") {
         Ok(_) => {
             let conn = st.db.lock();
-            log_event(&conn, "admin_update", None, None, None, "self-update requested");
+            log_event(&conn, "admin_update", None, None, None, "self-update requested", None);
             drop(conn);
             Json(json!({ "ok": true, "status": "update requested — the broker will restart on the new image shortly" })).into_response()
         }
@@ -856,6 +1178,288 @@ async fn admin_logout(State(st): State<AppState>, headers: HeaderMap) -> Respons
         st.sessions.lock().remove(tok);
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+/// Admin: cancel any build (session-gated), attributed to the build's owner.
+async fn admin_cancel(State(st): State<AppState>, headers: HeaderMap, Path(build_id): Path<String>) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    if !valid_build_id(&build_id) {
+        return json_err(StatusCode::BAD_REQUEST, "bad build_id");
+    }
+    let row = {
+        let conn = st.db.lock();
+        conn.query_row("SELECT uid, state, run_id FROM builds WHERE id=?1", [&build_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
+        })
+        .optional().ok().flatten()
+    };
+    let Some((owner, state, run_id)) = row else {
+        return json_err(StatusCode::NOT_FOUND, "unknown build");
+    };
+    {
+        let conn = st.db.lock();
+        log_event(&conn, "admin_cancel", Some(&build_id), Some(&owner), None, &format!("admin cancelled (was {state})"), None);
+    }
+    let new_state = do_cancel(&st, &build_id, &state, run_id, Some(&owner)).await;
+    Json(json!({ "state": new_state })).into_response()
+}
+
+/// Admin: remove a finished build's artifact + Actions run early (the reaper's job, on demand).
+async fn admin_expire(State(st): State<AppState>, headers: HeaderMap, Path(build_id): Path<String>) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    if !valid_build_id(&build_id) {
+        return json_err(StatusCode::BAD_REQUEST, "bad build_id");
+    }
+    let row = {
+        let conn = st.db.lock();
+        conn.query_row("SELECT uid, state, run_id FROM builds WHERE id=?1", [&build_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?))
+        })
+        .optional().ok().flatten()
+    };
+    let Some((owner, state, run_id)) = row else {
+        return json_err(StatusCode::NOT_FOUND, "unknown build");
+    };
+    if !matches!(state.as_str(), "done" | "failed" | "cancelled") {
+        return json_err(StatusCode::BAD_REQUEST, "build is not finished");
+    }
+    let asset_ok = if state == "done" { delete_release_assets(&st, &build_id).await.is_ok() } else { true };
+    let run_ok = match run_id {
+        Some(rid) => delete_run(&st, rid).await.is_ok(),
+        None => true,
+    };
+    if !(asset_ok && run_ok) {
+        return json_err(StatusCode::BAD_GATEWAY, "GitHub cleanup failed; the cron will retry");
+    }
+    {
+        let conn = st.db.lock();
+        conn.execute("UPDATE builds SET state='expired' WHERE id=?1", [&build_id]).ok();
+        log_event(&conn, "expired", Some(&build_id), Some(&owner), None, "admin removed early", None);
+    }
+    Json(json!({ "ok": true, "state": "expired" })).into_response()
+}
+
+/// Admin: wipe the audit log.
+async fn admin_clear_logs(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    let conn = st.db.lock();
+    let cleared = conn.execute("DELETE FROM events", []).unwrap_or(0);
+    log_event(&conn, "admin_clear_logs", None, None, None, &format!("cleared {cleared} events"), None);
+    drop(conn);
+    Json(json!({ "ok": true, "cleared": cleared })).into_response()
+}
+
+/// Admin: reset the hourly rate-limit window (mark "now"; queries ignore earlier builds).
+async fn admin_reset_limits(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    let conn = st.db.lock();
+    set_setting(&conn, "limits_reset_ts", &now().to_string());
+    log_event(&conn, "admin_reset_limits", None, None, None, "hourly limits reset", None);
+    drop(conn);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Admin: set runtime limit overrides (stored as the `limits` setting, layered over env).
+async fn admin_limits(State(st): State<AppState>, headers: HeaderMap, raw: Bytes) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or_else(|_| json!({}));
+    let conn = st.db.lock();
+    let cur = effective_limits(&conn, &st.cfg);
+    // Each key: a positive int ≤ 100000 wins, else keep the current value.
+    let pick = |key: &str, cur_val: i64| -> i64 {
+        match js_parse_int(&body[key]) {
+            Some(v) if v > 0 && v <= 100_000 => v,
+            _ => cur_val,
+        }
+    };
+    let next = json!({
+        "userHourly": pick("userHourly", cur.user_hourly),
+        "ipHourly": pick("ipHourly", cur.ip_hourly),
+        "globalHourly": pick("globalHourly", cur.global_hourly),
+        "maxConcurrent": pick("maxConcurrent", cur.max_concurrent),
+        "maxQueue": pick("maxQueue", cur.max_queue),
+        "retention": pick("retention", cur.retention),
+    });
+    let next_str = next.to_string();
+    set_setting(&conn, "limits", &next_str);
+    log_event(&conn, "admin_limits", None, None, None, &next_str, None);
+    drop(conn);
+    Json(json!({ "ok": true, "limits": next })).into_response()
+}
+
+// --- Admin user management (master only) + invite self-enrollment ----------
+
+#[derive(Deserialize)]
+struct InviteReq {
+    #[serde(default)]
+    username: String,
+}
+
+/// Master only: invite a new named admin (generates a one-time invite token + TOTP secret).
+async fn admin_invite(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<InviteReq>) -> Response {
+    if let Some(e) = require_master(&headers, &st) {
+        return e;
+    }
+    let u = body.username.to_lowercase().trim().to_string();
+    if !valid_username(&u) {
+        return json_err(StatusCode::BAD_REQUEST, "username must be 3-32 chars: a-z 0-9 . _ -");
+    }
+    let token = rand_token();
+    let secret = new_totp_secret();
+    let exp = now() + 3600; // invite valid 60 minutes
+    let conn = st.db.lock();
+    let exists = conn
+        .query_row("SELECT 1 FROM admins WHERE username=?1", [&u], |_| Ok(()))
+        .optional().ok().flatten().is_some();
+    if exists {
+        return json_err(StatusCode::CONFLICT, "that username already exists");
+    }
+    if conn
+        .execute(
+            "INSERT INTO admins(username, totp_secret, invite_token, invite_expires, created_ts, created_by) VALUES (?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![u, secret, token, exp, now(), "master"],
+        )
+        .is_err()
+    {
+        return json_err(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
+    }
+    log_event(&conn, "admin_user_invited", None, None, None, &format!("invited {u}"), None);
+    drop(conn);
+    Json(json!({ "ok": true, "username": u, "invite_token": token, "expires_in": 3600 })).into_response()
+}
+
+/// Master only: list admin users with their state (active/invited/invite-expired/disabled).
+async fn admin_list_users(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(e) = require_master(&headers, &st) {
+        return e;
+    }
+    let conn = st.db.lock();
+    let users = query_admin_users(&conn);
+    drop(conn);
+    Json(json!({ "users": users })).into_response()
+}
+
+/// Master only: delete a named admin + kill its live sessions.
+async fn admin_delete_user(State(st): State<AppState>, headers: HeaderMap, Path(username): Path<String>) -> Response {
+    if let Some(e) = require_master(&headers, &st) {
+        return e;
+    }
+    let u = username.to_lowercase();
+    let deleted = {
+        let conn = st.db.lock();
+        let n = conn.execute("DELETE FROM admins WHERE username=?1", [&u]).unwrap_or(0);
+        log_event(&conn, "admin_user_deleted", None, None, None, &format!("deleted {u}"), None);
+        n
+    };
+    st.sessions.lock().retain(|_, (id, _)| id != &u);
+    Json(json!({ "ok": true, "deleted": deleted })).into_response()
+}
+
+#[derive(Deserialize)]
+struct DisableReq {
+    #[serde(default)]
+    disabled: bool,
+}
+
+/// Master only: disable/enable a named admin (disabling also kills its sessions).
+/// Not used by the current frontend; present for full Worker parity. Tolerates an
+/// empty/invalid body (defaults to enabled), like the Worker's `catch { body = {} }`.
+async fn admin_disable_user(State(st): State<AppState>, headers: HeaderMap, Path(username): Path<String>, raw: Bytes) -> Response {
+    if let Some(e) = require_master(&headers, &st) {
+        return e;
+    }
+    let disabled = serde_json::from_slice::<DisableReq>(&raw).map(|b| b.disabled).unwrap_or(false);
+    let u = username.to_lowercase();
+    {
+        let conn = st.db.lock();
+        conn.execute("UPDATE admins SET disabled=?2 WHERE username=?1", rusqlite::params![u, i64::from(disabled)]).ok();
+        log_event(&conn, "admin_user_disabled", None, None, None, &format!("{} {}", if disabled { "disabled" } else { "enabled" }, u), None);
+    }
+    if disabled {
+        st.sessions.lock().retain(|_, (id, _)| id != &u);
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Invite enrollment (no session — the invitee isn't an admin yet): fetch the TOTP secret.
+async fn admin_get_invite(State(st): State<AppState>, Path(token): Path<String>) -> Response {
+    let row = {
+        let conn = st.db.lock();
+        conn.query_row(
+            "SELECT username, totp_secret, invite_expires, pw_hash FROM admins WHERE invite_token=?1",
+            [&token],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<String>>(3)?)),
+        )
+        .optional().ok().flatten()
+    };
+    let Some((username, secret, invite_expires, pw_hash)) = row else {
+        return json_err(StatusCode::NOT_FOUND, "invalid or already-used invite");
+    };
+    if pw_hash.is_some() {
+        return json_err(StatusCode::NOT_FOUND, "invalid or already-used invite");
+    }
+    if invite_expires.unwrap_or(0) <= now() {
+        return json_err(StatusCode::GONE, "this invite has expired");
+    }
+    let otpauth = invite_otpauth(&username, &secret);
+    Json(json!({ "username": username, "secret": secret, "otpauth": otpauth })).into_response()
+}
+
+#[derive(Deserialize)]
+struct AcceptReq {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    totp: String,
+}
+
+/// Invite enrollment: set the password (after verifying the TOTP) and clear the invite.
+async fn admin_accept_invite(State(st): State<AppState>, Json(body): Json<AcceptReq>) -> Response {
+    let row = {
+        let conn = st.db.lock();
+        conn.query_row(
+            "SELECT username, totp_secret, invite_expires, pw_hash FROM admins WHERE invite_token=?1",
+            [&body.token],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<i64>>(2)?, r.get::<_, Option<String>>(3)?)),
+        )
+        .optional().ok().flatten()
+    };
+    let Some((username, totp_secret, invite_expires, pw_hash)) = row else {
+        return json_err(StatusCode::NOT_FOUND, "invalid or already-used invite");
+    };
+    if pw_hash.is_some() {
+        return json_err(StatusCode::NOT_FOUND, "invalid or already-used invite");
+    }
+    if invite_expires.unwrap_or(0) <= now() {
+        return json_err(StatusCode::GONE, "this invite has expired");
+    }
+    if body.password.chars().count() < 10 {
+        return json_err(StatusCode::BAD_REQUEST, "password must be at least 10 characters");
+    }
+    if !totp_check(&totp_secret, body.totp.trim()) {
+        return json_err(StatusCode::UNAUTHORIZED, "that 2FA code doesn't match — re-scan and try the next code");
+    }
+    let hash = hash_password(&body.password);
+    let conn = st.db.lock();
+    conn.execute(
+        "UPDATE admins SET pw_hash=?2, invite_token=NULL, invite_expires=NULL WHERE username=?1",
+        rusqlite::params![username, hash],
+    ).ok();
+    log_event(&conn, "admin_user_enrolled", None, None, None, &format!("{username} enrolled"), None);
+    drop(conn);
+    Json(json!({ "ok": true, "username": username })).into_response()
 }
 
 // ---- query helpers --------------------------------------------------------
@@ -914,7 +1518,7 @@ fn latest_user_build(conn: &Connection, cfg: &Config, uid: &str, now_ts: i64) ->
 
 fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts, run_id, cancel_requested, uid, ip_bucket FROM builds ORDER BY created_ts DESC LIMIT ?1",
+        "SELECT id, defconfig, state, created_ts, dispatched_ts, finished_ts, run_id, cancel_requested, uid, ip_bucket, ip_full FROM builds ORDER BY created_ts DESC LIMIT ?1",
     ) else {
         return vec![];
     };
@@ -922,6 +1526,10 @@ fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> 
         let real_state: String = r.get(2)?;
         let cancel_req: i64 = r.get(7)?;
         let state = if real_state == "running" && cancel_req != 0 { "cancelling".to_string() } else { real_state };
+        let ip_bucket: String = r.get(9)?;
+        let ip_full: Option<String> = r.get(10)?;
+        // Full client IP when stored, falling back to the bucket (older rows have no ip_full).
+        let ip = ip_full.filter(|s| !s.is_empty()).unwrap_or_else(|| ip_bucket.clone());
         Ok(json!({
             "build_id": r.get::<_, String>(0)?,
             "defconfig": r.get::<_, String>(1)?,
@@ -931,7 +1539,8 @@ fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> 
             "finished_ts": r.get::<_, Option<i64>>(5)?,
             "run_id": r.get::<_, Option<i64>>(6)?,
             "uid": r.get::<_, String>(8)?,
-            "ip": r.get::<_, String>(9)?,
+            "ip": ip,
+            "ip_bucket": ip_bucket,
         }))
     });
     match it {
@@ -941,17 +1550,57 @@ fn query_recent_builds(conn: &Connection, limit: i64) -> Vec<serde_json::Value> 
 }
 
 fn query_recent_events(conn: &Connection, limit: i64) -> Vec<serde_json::Value> {
-    let Ok(mut stmt) = conn.prepare("SELECT ts, kind, build_id, detail, uid, ip_bucket FROM events ORDER BY id DESC LIMIT ?1") else {
+    let Ok(mut stmt) = conn.prepare("SELECT ts, kind, build_id, detail, uid, ip_bucket, ip_full FROM events ORDER BY id DESC LIMIT ?1") else {
         return vec![];
     };
     let it = stmt.query_map([limit], |r| {
+        let ip_bucket: Option<String> = r.get(5)?;
+        let ip_full: Option<String> = r.get(6)?;
+        let ip = ip_full.filter(|s| !s.is_empty()).or_else(|| ip_bucket.clone());
         Ok(json!({
             "ts": r.get::<_, i64>(0)?,
             "kind": r.get::<_, String>(1)?,
             "build_id": r.get::<_, Option<String>>(2)?,
             "detail": r.get::<_, String>(3)?,
             "uid": r.get::<_, Option<String>>(4)?,
-            "ip": r.get::<_, Option<String>>(5)?,
+            "ip": ip,
+            "ip_bucket": ip_bucket,
+        }))
+    });
+    match it {
+        Ok(rows) => rows.filter_map(|x| x.ok()).collect(),
+        Err(_) => vec![],
+    }
+}
+
+fn query_admin_users(conn: &Connection) -> Vec<serde_json::Value> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT username, pw_hash, invite_expires, disabled, created_ts, last_login FROM admins ORDER BY created_ts DESC",
+    ) else {
+        return vec![];
+    };
+    let now_ts = now();
+    let it = stmt.query_map([], |r| {
+        let username: String = r.get(0)?;
+        let pw_hash: Option<String> = r.get(1)?;
+        let invite_expires: Option<i64> = r.get(2)?;
+        let disabled: i64 = r.get(3)?;
+        let created_ts: i64 = r.get(4)?;
+        let last_login: Option<i64> = r.get(5)?;
+        let state = if disabled != 0 {
+            "disabled"
+        } else if pw_hash.is_some() {
+            "active"
+        } else if invite_expires.unwrap_or(0) > now_ts {
+            "invited"
+        } else {
+            "invite-expired"
+        };
+        Ok(json!({
+            "username": username,
+            "state": state,
+            "created_ts": created_ts,
+            "last_login": last_login,
         }))
     });
     match it {
@@ -1080,6 +1729,7 @@ type QueuedBuild = (String, String, Option<String>);
 async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
     let now_ts = now();
     let _ = resolve_thingino(st).await; // keep commit + defconfig list warm (picks up new boards)
+    let lim = { let conn = st.db.lock(); effective_limits(&conn, &st.cfg) };
 
     // 1) Snapshot running builds + the next queued builds to dispatch.
     let (running, to_dispatch): (Vec<RunningBuild>, Vec<QueuedBuild>) = {
@@ -1098,7 +1748,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
                 .collect();
             rows
         };
-        let slots = (st.cfg.max_concurrent - running.len() as i64).max(0);
+        let slots = (lim.max_concurrent - running.len() as i64).max(0);
         let to_dispatch: Vec<QueuedBuild> = if slots > 0 {
             let mut q = conn.prepare("SELECT id, defconfig, commit_sha FROM builds WHERE state='queued' ORDER BY created_ts ASC LIMIT ?1")?;
             let rows = q
@@ -1128,7 +1778,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
                     let _ = delete_run(st, r.run_id).await; // wipe the cancelled run + its logs now, not at retention
                     let conn = st.db.lock();
                     conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2, run_id=NULL WHERE id=?1", rusqlite::params![id, now_ts]).ok();
-                    log_event(&conn, "cancelled", Some(id), None, None, "run stopped + deleted");
+                    log_event(&conn, "cancelled", Some(id), None, None, "run stopped + deleted", None);
                 }
                 Some(r) => {
                     let _ = cancel_run(st, r.run_id).await; // run still active — (re)request cancellation
@@ -1136,7 +1786,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
                 None => {
                     let conn = st.db.lock();
                     conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
-                    log_event(&conn, "cancelled", Some(id), None, None, "cancelled (run not found)");
+                    log_event(&conn, "cancelled", Some(id), None, None, "cancelled (run not found)", None);
                 }
             }
             continue;
@@ -1156,14 +1806,14 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
                     };
                     let conn = st.db.lock();
                     conn.execute("UPDATE builds SET state=?2, finished_ts=?3 WHERE id=?1", rusqlite::params![id, new_state, now_ts]).ok();
-                    log_event(&conn, new_state, Some(id), None, None, &format!("run {} {}", r.run_id, r.conclusion.as_deref().unwrap_or("?")));
+                    log_event(&conn, new_state, Some(id), None, None, &format!("run {} {}", r.run_id, r.conclusion.as_deref().unwrap_or("?")), None);
                 }
             }
             None => {
-                if now_ts - dispatched_ts > st.cfg.build_timeout_secs {
+                if now_ts - dispatched_ts > lim.build_timeout {
                     let conn = st.db.lock();
                     conn.execute("UPDATE builds SET state='failed', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
-                    log_event(&conn, "failed", Some(id), None, None, "timed out / run not found");
+                    log_event(&conn, "failed", Some(id), None, None, "timed out / run not found", None);
                 }
             }
         }
@@ -1182,7 +1832,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
             Ok(()) => {
                 let conn = st.db.lock();
                 conn.execute("UPDATE builds SET state='running', dispatched_ts=?2 WHERE id=?1", rusqlite::params![id, now()]).ok();
-                log_event(&conn, "dispatched", Some(id), None, None, defconfig);
+                log_event(&conn, "dispatched", Some(id), None, None, defconfig, None);
             }
             Err(e) => {
                 let conn = st.db.lock();
@@ -1190,7 +1840,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
                 let attempts: i64 = conn.query_row("SELECT attempts FROM builds WHERE id=?1", [id], |r| r.get(0)).unwrap_or(0);
                 if attempts >= 3 {
                     conn.execute("UPDATE builds SET state='failed', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now()]).ok();
-                    log_event(&conn, "failed", Some(id), None, None, "dispatch failed 3x");
+                    log_event(&conn, "failed", Some(id), None, None, "dispatch failed 3x", None);
                 }
                 tracing::warn!("dispatch failed for {id} (attempt {attempts}): {e}");
             }
@@ -1209,7 +1859,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
     };
     for (id, state, run_id, finished_ts) in reap {
         let age = now_ts - finished_ts;
-        let expired = if state == "done" { age > st.cfg.retention_secs } else { age > st.cfg.failed_retention_secs };
+        let expired = if state == "done" { age > lim.retention } else { age > lim.failed_retention };
         if !expired {
             continue;
         }
@@ -1223,7 +1873,7 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
         if asset_ok && run_ok {
             let conn = st.db.lock();
             conn.execute("UPDATE builds SET state='expired' WHERE id=?1", [&id]).ok();
-            log_event(&conn, "expired", Some(&id), None, None, &format!("reaped {state}: asset+run removed"));
+            log_event(&conn, "expired", Some(&id), None, None, &format!("reaped {state}: asset+run removed"), None);
         } else {
             tracing::warn!("reap of {id} incomplete (asset_ok={asset_ok} run_ok={run_ok}); will retry");
         }
