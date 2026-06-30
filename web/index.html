@@ -63,6 +63,7 @@
   <script src="/vendor/bootstrap.bundle.min.js"></script>
   <script>
   const $=id=>document.getElementById(id);
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const LS_KEY='thingino_builder_uid', MY_KEY='thingino_my_build';
   const getUid=()=>localStorage.getItem(LS_KEY)||'';
   const setUid=u=>{ if(u) localStorage.setItem(LS_KEY,u); };
@@ -95,7 +96,7 @@
     const {ok,data}=await api('/api/defconfigs');
     if(!ok||!Array.isArray(data)){ const h=$('hint'); h.textContent='Could not load camera list — is the broker up?'; h.className='form-text text-danger'; return; }
     data.sort(); allowed=new Set(data);
-    $('boards').innerHTML=data.map(b=>`<option value="${b}">`).join('');
+    $('boards').innerHTML=data.map(b=>`<option value="${esc(b)}">`).join('');
     validate();
   }
 
@@ -116,7 +117,7 @@
     picker.classList.toggle('d-none', ACTIVE.has(you.state));
     mb.classList.remove('d-none');
     const live=(you.elapsed_secs||0)+(Date.now()-youAt)/1000;
-    const meta=`<div class="small muted mt-2">defconfig <code>${you.defconfig}</code><br>build id <code>${you.build_id}</code>${you.deduped?'<br><span class="text-warning">reused an existing identical image</span>':''}</div>`;
+    const meta=`<div class="small muted mt-2">defconfig <code>${esc(you.defconfig)}</code><br>build id <code>${esc(you.build_id)}</code>${you.deduped?'<br><span class="text-warning">reused an existing identical image</span>':''}</div>`;
     let h='';
     if(you.state==='queued')
       h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Queued</strong> — position ${you.position}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
@@ -126,7 +127,7 @@
       h=`<div class="alert alert-warning mb-0">${spin()}<strong>Cancelling…</strong><div class="small">stopping the build — this can take a moment</div>${meta}</div>`;
     else if(you.state==='done')
       h=`<div class="alert alert-success mb-0"><i class="bi bi-check-circle-fill me-1"></i><strong>Build ready</strong>${meta}
-        <div class="mt-2 d-flex gap-2 flex-wrap"><a class="btn btn-thingino btn-sm" href="${you.download_url}" download><i class="bi bi-download me-1"></i>Download .bin</a>
+        <div class="mt-2 d-flex gap-2 flex-wrap"><a class="btn btn-thingino btn-sm" href="${esc(you.download_url)}" download><i class="bi bi-download me-1"></i>Download .bin</a>
         <button class="btn btn-outline-secondary btn-sm" id="again">Build another</button></div>
         <div class="small text-warning mt-2"><i class="bi bi-clock me-1"></i>Available for ~30 minutes, then removed.</div></div>`;
     else if(you.state==='failed')

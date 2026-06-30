@@ -7,6 +7,16 @@
 {$DOMAIN} {
 	# tls /certs/cert.pem /certs/key.pem
 	encode gzip zstd
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# App uses inline <script>/<style> + same-origin vendored assets; API + image
+		# downloads are same-origin / GitHub. No third-party origins.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+		-Server
+	}
 	reverse_proxy 127.0.0.1:8080 {
 		# Real client IP (spoof-proof: set from Caddy's own connection, not a
 		# client-supplied header) — the broker reads this for per-IP limits.

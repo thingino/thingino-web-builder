@@ -12,13 +12,14 @@ Image=@IMAGE@
 AutoUpdate=registry
 EnvironmentFile=@DIR@/.env
 Environment=IP_HEADER=X-Real-IP
-Volume=thingino-broker-data:/data
+Volume=thingino-broker-data:/data:U
 # UI-triggered self-update: broker drops a marker here; the host path-unit watches it.
-Volume=@DIR@/state:/state:z
+Volume=@DIR@/state:/state:U,z
 Environment=UPDATE_MARKER_PATH=/state/update.request
 # GitHub App auth (instead of GITHUB_TOKEN): drop app-key.pem in the repo dir,
 # uncomment the mount below, and set GITHUB_APP_KEY_PATH=/app/app-key.pem in .env.
-#Volume=@DIR@/app-key.pem:/app/app-key.pem:ro,Z
+# :U lets the non-root container user read it (Podman chowns the source).
+#Volume=@DIR@/app-key.pem:/app/app-key.pem:ro,U,Z
 # Loopback only — reached by the host-networked Caddy.
 PublishPort=127.0.0.1:8080:8080
 

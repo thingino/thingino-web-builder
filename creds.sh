@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage admin credentials for a Docker Compose deployment. They live in .env and
+# Manage admin credentials for the Podman/Quadlet deployment. They live in .env and
 # are read by the broker at startup, so a change means recreating the broker
 # container (which also clears all in-memory admin sessions).
 #

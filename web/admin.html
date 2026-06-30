@@ -83,6 +83,7 @@ const TK='thingino_admin_token';
 const tok=()=>sessionStorage.getItem(TK)||'';
 const $=id=>document.getElementById(id);
 const short=s=>s?String(s).slice(0,8):'';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tfmt=ts=>new Date(ts*1000).toLocaleTimeString();
 const dur=(a,b)=>{ if(!a||!b) return '—'; const s=b-a; return `${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`; };
 const ago=ts=>{ const s=Math.floor(Date.now()/1000)-ts; if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; };
@@ -110,7 +111,7 @@ async function refresh(){
   $('kill-extra').textContent=`cap ${d.max_concurrent} concurrent · retention ${Math.round(d.retention_secs/60)} min`;
   $('ver').textContent=d.version||'—';
   if(d.update_available){
-    $('upd-badge').innerHTML='<span class="badge text-bg-warning ms-1">update available → '+(d.latest_version||'')+'</span>';
+    $('upd-badge').innerHTML='<span class="badge text-bg-warning ms-1">update available → '+esc(d.latest_version)+'</span>';
     $('upd-btn').style.display=''; $('upd-btn').dataset.v=d.latest_version||'';
   } else {
     $('upd-badge').innerHTML=d.latest_version?'<span class="text-success small ms-1">up to date</span>':'';
@@ -118,8 +119,8 @@ async function refresh(){
   }
   const c=d.counts||{};
   $('tiles').innerHTML=[['running',c.running],['queued',c.queued],['done',c.done],['failed',c.failed],['cancelled',c.cancelled],['expired',c.expired],['24h',d.last24h],['avg build',d.avg_build_secs?Math.round(d.avg_build_secs/60)+'m':'—']].map(([l,n])=>tile(l,n)).join('');
-  $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${short(b.build_id)}</code></td><td>${b.defconfig}</td><td>${pill(b.state)}</td><td><code>${short(b.uid)}</code></td><td><code>${b.ip||''}</code></td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${b.run_id||''}</code></td></tr>`).join('');
-  $('events-body').innerHTML=(d.recent_events||[]).map(e=>`<tr><td>${tfmt(e.ts)}</td><td>${e.kind}</td><td><code>${short(e.build_id)}</code></td><td><code>${short(e.uid)}</code></td><td><code>${e.ip||''}</code></td><td class="muted">${(e.detail||'').replace(/</g,'&lt;')}</td></tr>`).join('');
+  $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${esc(short(b.build_id))}</code></td><td>${esc(b.defconfig)}</td><td>${pill(b.state)}</td><td><code>${esc(short(b.uid))}</code></td><td><code>${esc(b.ip)}</code></td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${esc(b.run_id)}</code></td></tr>`).join('');
+  $('events-body').innerHTML=(d.recent_events||[]).map(e=>`<tr><td>${tfmt(e.ts)}</td><td>${esc(e.kind)}</td><td><code>${esc(short(e.build_id))}</code></td><td><code>${esc(short(e.uid))}</code></td><td><code>${esc(e.ip)}</code></td><td class="muted">${esc(e.detail)}</td></tr>`).join('');
   $('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 async function toggle(){ await fetch('/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }

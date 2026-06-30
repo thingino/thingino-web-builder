@@ -9,7 +9,9 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --user-group --no-create-home app \
+    && mkdir -p /data /state && chown app:app /data /state
 WORKDIR /app
 COPY --from=build /src/broker/target/release/thingino-build-broker .
 COPY web ./web
@@ -22,4 +24,8 @@ ENV BIND_ADDR=0.0.0.0:8080 \
     PID_PATH=/data/broker.pid
 VOLUME ["/data"]
 EXPOSE 8080
+# Drop privileges. Bind port is 8080 (unprivileged); /data + /state are mounted
+# with :U so Podman chowns them to this uid. Caddy (host-net, ports 80/443) is the
+# only piece that needs root.
+USER app
 ENTRYPOINT ["/app/thingino-build-broker"]
