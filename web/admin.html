@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>thingino builder — admin</title>
+<style>
+  :root{ --bg:#0c0f12;--panel:#151a1f;--panel-2:#1b2127;--border:#2a323b;--text:#e6edf3;
+    --muted:#8b98a5;--accent:#46d160;--danger:#ff6b6b;--warn:#e3b341; }
+  *{box-sizing:border-box;}
+  body{margin:0;min-height:100vh;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg);color:var(--text);padding:5vh 16px;}
+  .wrap{max-width:920px;margin:0 auto;}
+  h1{font-size:20px;margin:0 0 16px;} h1 .dot{color:var(--accent);}
+  .gate{max-width:420px;margin:10vh auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;}
+  input[type=password]{width:100%;background:var(--panel-2);border:1px solid var(--border);border-radius:9px;color:var(--text);padding:12px;font-size:14px;outline:none;margin:10px 0;}
+  button{background:var(--accent);color:#07120a;border:0;border-radius:9px;padding:10px 16px;font-size:14px;font-weight:650;cursor:pointer;}
+  button:hover{filter:brightness(1.08);} button.ghost{background:transparent;color:var(--muted);border:1px solid var(--border);}
+  button.danger{background:var(--danger);color:#1a0808;} button.warn{background:var(--warn);color:#241c05;}
+  .err{color:var(--danger);font-size:13px;min-height:18px;}
+  .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;}
+  .kill{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:16px;}
+  .kill .state{font-weight:650;} .kill .on{color:var(--accent);} .kill .off{color:var(--danger);}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:18px;}
+  .tile{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
+  .tile .n{font-size:22px;font-weight:700;} .tile .l{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;}
+  h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:18px 0 8px;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  th{color:var(--muted);font-weight:600;} td.mono,th.mono{font-family:ui-monospace,monospace;}
+  .pill{padding:1px 8px;border-radius:20px;font-size:11px;font-weight:650;}
+  .s-queued{background:#22303c;color:#8fc7ff;} .s-running{background:#243b27;color:var(--accent);}
+  .s-done{background:#1f3a24;color:var(--accent);} .s-failed{background:#3a2020;color:var(--danger);}
+  .s-cancelled{background:#3a3320;color:var(--warn);} .s-expired{background:#262b30;color:var(--muted);}
+  .scroll{max-height:280px;overflow:auto;border:1px solid var(--border);border-radius:10px;}
+  .muted{color:var(--muted);}
+</style>
+</head>
+<body>
+<div id="gate" class="gate">
+  <h1>admin<span class="dot">.</span></h1>
+  <p class="muted">Enter the admin token.</p>
+  <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off">
+  <button id="login">Sign in</button>
+  <div class="err" id="gate-err"></div>
+</div>
+
+<div id="app" class="wrap" style="display:none">
+  <div class="top">
+    <h1>thingino builder — admin<span class="dot">.</span></h1>
+    <div><span class="muted" id="updated"></span> &nbsp; <button class="ghost" id="logout">Sign out</button></div>
+  </div>
+
+  <div class="kill">
+    <div>Builds are <span class="state" id="kill-state">…</span></div>
+    <button id="kill-btn">…</button>
+    <span class="muted" id="kill-extra"></span>
+  </div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Recent builds</h2>
+  <div class="scroll"><table id="builds"><thead><tr>
+    <th class="mono">build</th><th>defconfig</th><th>state</th><th>created</th><th>duration</th><th class="mono">run</th>
+  </tr></thead><tbody></tbody></table></div>
+
+  <h2>Recent events</h2>
+  <div class="scroll"><table id="events"><thead><tr>
+    <th>time</th><th>kind</th><th class="mono">build</th><th>detail</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+
+<script>
+const TK='thingino_admin_token';
+const tok=()=>sessionStorage.getItem(TK)||'';
+const $=id=>document.getElementById(id);
+const short=s=>s?String(s).slice(0,8):'';
+const tfmt=ts=>{ const d=new Date(ts*1000); return d.toLocaleTimeString(); };
+const dur=(a,b)=>{ if(!a||!b) return '—'; const s=b-a; return `${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`; };
+const ago=ts=>{ const s=Math.floor(Date.now()/1000)-ts; if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; };
+
+async function adminGet(){
+  const r=await fetch('/api/admin/stats',{headers:{Authorization:'Bearer '+tok()}});
+  if(r.status===401) throw new Error('unauthorized');
+  return r.json();
+}
+
+async function login(){
+  sessionStorage.setItem(TK,$('token').value.trim());
+  try { await adminGet(); show(); }
+  catch { $('gate-err').textContent='Invalid token.'; sessionStorage.removeItem(TK); }
+}
+function show(){ $('gate').style.display='none'; $('app').style.display=''; refresh(); }
+function logout(){ sessionStorage.removeItem(TK); location.reload(); }
+
+let enabled=true;
+async function refresh(){
+  let d; try { d=await adminGet(); } catch { logout(); return; }
+  enabled = d.builds_enabled;
+  $('kill-state').innerHTML = enabled?'<span class="on">ENABLED</span>':'<span class="off">DISABLED</span>';
+  const kb=$('kill-btn'); kb.textContent=enabled?'Disable builds':'Enable builds'; kb.className=enabled?'danger':'';
+  $('kill-extra').textContent=`cap ${d.max_concurrent} concurrent · retention ${Math.round(d.retention_secs/60)} min`;
+
+  const c=d.counts||{};
+  const tiles=[['running',c.running],['queued',c.queued],['done',c.done],['failed',c.failed],
+    ['cancelled',c.cancelled],['expired',c.expired],['24h total',d.last24h],['avg build',d.avg_build_secs?Math.round(d.avg_build_secs/60)+'m':'—']];
+  $('tiles').innerHTML=tiles.map(([l,n])=>`<div class="tile"><div class="n">${n??0}</div><div class="l">${l}</div></div>`).join('');
+
+  $('builds').tBodies[0].innerHTML=(d.recent_builds||[]).map(b=>`<tr>
+    <td class="mono">${short(b.build_id)}</td><td>${b.defconfig}</td>
+    <td><span class="pill s-${b.state}">${b.state}</span></td>
+    <td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td>
+    <td class="mono">${b.run_id||''}</td></tr>`).join('');
+
+  $('events').tBodies[0].innerHTML=(d.recent_events||[]).map(e=>`<tr>
+    <td>${tfmt(e.ts)}</td><td>${e.kind}</td><td class="mono">${short(e.build_id)}</td>
+    <td class="muted">${(e.detail||'').replace(/</g,'&lt;')}</td></tr>`).join('');
+
+  $('updated').textContent='updated '+new Date().toLocaleTimeString();
+}
+
+async function toggle(){
+  await fetch('/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})});
+  refresh();
+}
+
+$('login').onclick=login;
+$('token').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+$('logout').onclick=logout;
+$('kill-btn').onclick=toggle;
+
+if(tok()){ adminGet().then(show).catch(()=>{ sessionStorage.removeItem(TK); }); }
+setInterval(()=>{ if($('app').style.display!=='none') refresh(); }, 5000);
+</script>
+</body>
+</html>

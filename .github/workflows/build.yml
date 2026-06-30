@@ -25,10 +25,8 @@ on:
         description: "Build id (uuid). Blank = auto-generate."
         required: false
 
-# Serialize builds: queue them, don't cancel, so cache/runner contention stays sane.
-concurrency:
-  group: web-build-serial
-  cancel-in-progress: false
+# No GitHub-side concurrency group: the broker is the gate (global cap of 6),
+# so dispatched builds run in parallel here.
 
 permissions:
   contents: write   # create the rolling release + upload assets

@@ -6,73 +6,71 @@
 <title>thingino firmware builder</title>
 <style>
   :root {
-    --bg: #0c0f12;
-    --panel: #151a1f;
-    --panel-2: #1b2127;
-    --border: #2a323b;
-    --text: #e6edf3;
-    --muted: #8b98a5;
-    --accent: #46d160;
-    --accent-dim: #2f8f44;
-    --danger: #ff6b6b;
+    --bg:#0c0f12; --panel:#151a1f; --panel-2:#1b2127; --border:#2a323b;
+    --text:#e6edf3; --muted:#8b98a5; --accent:#46d160; --accent-dim:#2f8f44;
+    --danger:#ff6b6b; --warn:#e3b341;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing:border-box; }
   body {
-    margin: 0; min-height: 100vh;
-    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    background: radial-gradient(1200px 600px at 50% -10%, #15202a 0%, var(--bg) 60%);
-    color: var(--text);
-    display: flex; align-items: flex-start; justify-content: center;
-    padding: 7vh 16px 4vh;
+    margin:0; min-height:100vh;
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%,#15202a 0%,var(--bg) 60%);
+    color:var(--text); display:flex; align-items:flex-start; justify-content:center;
+    padding:6vh 16px 4vh;
   }
   .card {
-    width: 100%; max-width: 540px;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-    padding: 28px 26px; box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    width:100%; max-width:560px; background:var(--panel); border:1px solid var(--border);
+    border-radius:14px; padding:26px 24px; box-shadow:0 18px 50px rgba(0,0,0,.45);
   }
-  h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .2px; }
-  h1 .dot { color: var(--accent); }
-  p.sub { margin: 0 0 22px; color: var(--muted); font-size: 14px; }
-  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 7px; }
-  .row { display: flex; gap: 10px; }
+  h1 { margin:0 0 4px; font-size:22px; } h1 .dot{ color:var(--accent); }
+  p.sub { margin:0 0 18px; color:var(--muted); font-size:14px; }
+
+  .stats {
+    display:flex; gap:14px; flex-wrap:wrap; font-size:13px; color:var(--muted);
+    background:var(--panel-2); border:1px solid var(--border); border-radius:10px;
+    padding:10px 14px; margin-bottom:16px;
+  }
+  .stats b { color:var(--text); font-weight:650; }
+  .stats .sep { opacity:.4; }
+  .banner {
+    display:none; margin-bottom:16px; padding:11px 14px; border-radius:9px;
+    background:rgba(227,179,65,.12); border:1px solid rgba(227,179,65,.4);
+    color:var(--warn); font-size:13.5px;
+  }
+  .banner.show { display:block; }
+
+  label { display:block; font-size:13px; color:var(--muted); margin:0 0 7px; }
+  .row { display:flex; gap:10px; }
   input[type=text] {
-    flex: 1; min-width: 0;
-    background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
-    color: var(--text); padding: 12px 13px; font-size: 14px; outline: none;
+    flex:1; min-width:0; background:var(--panel-2); border:1px solid var(--border);
+    border-radius:9px; color:var(--text); padding:12px 13px; font-size:14px; outline:none;
   }
-  input[type=text]:focus { border-color: var(--accent-dim); }
+  input[type=text]:focus { border-color:var(--accent-dim); }
   button {
-    background: var(--accent); color: #07120a; border: 0; border-radius: 9px;
-    padding: 0 18px; font-size: 14px; font-weight: 650; cursor: pointer;
-    white-space: nowrap; transition: filter .15s, opacity .15s;
+    background:var(--accent); color:#07120a; border:0; border-radius:9px; padding:0 18px;
+    font-size:14px; font-weight:650; cursor:pointer; white-space:nowrap;
+    transition:filter .15s,opacity .15s; min-height:44px;
   }
-  button:hover:not(:disabled) { filter: brightness(1.08); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .hint { margin: 9px 2px 0; font-size: 12px; color: var(--muted); min-height: 16px; }
-  .hint.bad { color: var(--danger); }
-  .panel {
-    margin-top: 20px; padding: 16px; border-radius: 10px;
-    background: var(--panel-2); border: 1px solid var(--border);
-    display: none;
-  }
-  .panel.show { display: block; }
-  .panel .head { display: flex; align-items: center; gap: 10px; font-weight: 600; }
-  .spinner {
-    width: 15px; height: 15px; border-radius: 50%;
-    border: 2px solid var(--border); border-top-color: var(--accent);
-    animation: spin .8s linear infinite; flex: none;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .meta { margin-top: 9px; font-size: 12.5px; color: var(--muted); word-break: break-all; }
-  .meta code { color: var(--text); background: #0e1318; padding: 1px 6px; border-radius: 5px; }
-  a.dl {
-    display: inline-block; margin-top: 12px; text-decoration: none;
-    background: var(--accent); color: #07120a; font-weight: 650;
-    padding: 11px 16px; border-radius: 9px;
-  }
-  .ok { color: var(--accent); }
-  .err { color: var(--danger); }
-  footer { margin-top: 18px; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  button:hover:not(:disabled){ filter:brightness(1.08); }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--border); }
+  button.ghost:hover:not(:disabled){ color:var(--text); filter:none; border-color:var(--muted); }
+  .hint { margin:9px 2px 0; font-size:12px; color:var(--muted); min-height:16px; }
+  .hint.bad { color:var(--danger); }
+
+  .mybuild { display:none; padding:16px; border-radius:10px; background:var(--panel-2); border:1px solid var(--border); }
+  .mybuild.show { display:block; }
+  .mybuild .head { display:flex; align-items:center; gap:10px; font-weight:650; font-size:15px; }
+  .mybuild .head.ok { color:var(--accent); } .mybuild .head.err { color:var(--danger); } .mybuild .head.warn{ color:var(--warn); }
+  .spinner { width:15px;height:15px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--accent);animation:spin .8s linear infinite;flex:none; }
+  @keyframes spin{ to{ transform:rotate(360deg);} }
+  .meta { margin-top:9px; font-size:12.5px; color:var(--muted); word-break:break-all; }
+  .meta code { color:var(--text); background:#0e1318; padding:1px 6px; border-radius:5px; }
+  .actions { margin-top:13px; display:flex; gap:10px; align-items:center; }
+  a.dl { text-decoration:none; background:var(--accent); color:#07120a; font-weight:650; padding:11px 16px; border-radius:9px; min-height:44px; display:inline-flex; align-items:center; }
+  .expire { font-size:12px; color:var(--warn); margin-top:8px; }
+  footer { margin-top:18px; font-size:11.5px; color:var(--muted); line-height:1.6; }
+  footer a { color:var(--muted); }
 </style>
 </head>
 <body>
@@ -80,134 +78,161 @@
     <h1>thingino firmware builder<span class="dot">.</span></h1>
     <p class="sub">Pick your camera profile — it builds on GitHub Actions and you get a flashable image.</p>
 
-    <label for="board">Camera defconfig</label>
-    <div class="row">
-      <input id="board" type="text" list="boards" autocomplete="off" spellcheck="false"
-             placeholder="start typing, e.g. atom_cam2…">
-      <datalist id="boards"></datalist>
-      <button id="go" disabled>Build</button>
-    </div>
-    <div class="hint" id="hint">Loading camera list…</div>
+    <div class="stats" id="stats"><span>Connecting…</span></div>
+    <div class="banner" id="banner"></div>
 
-    <div class="panel" id="panel">
-      <div class="head"><span id="icon"></span><span id="title"></span></div>
-      <div class="meta" id="meta"></div>
-      <div id="action"></div>
+    <div id="picker">
+      <label for="board">Camera defconfig</label>
+      <div class="row">
+        <input id="board" type="text" list="boards" autocomplete="off" spellcheck="false" placeholder="start typing, e.g. atom_cam2…">
+        <datalist id="boards"></datalist>
+        <button id="go" disabled>Build</button>
+      </div>
+      <div class="hint" id="hint">Loading camera list…</div>
+    </div>
+
+    <div class="mybuild" id="mybuild">
+      <div class="head" id="mb-head"><span id="mb-icon"></span><span id="mb-title"></span></div>
+      <div class="meta" id="mb-meta"></div>
+      <div class="expire" id="mb-expire"></div>
+      <div class="actions" id="mb-actions"></div>
     </div>
 
     <footer>
-      Builds run on free GitHub Actions and can take ~20–40 minutes. Each request
-      is rate-limited. The image is published for anonymous download when ready.
+      Builds run on free GitHub Actions (~20–40 min). <b>2 builds/hour</b> per user,
+      <b>6</b> at a time overall. Finished images are downloadable for <b>30 minutes</b>, then removed.
+      · <a href="/admin.html">admin</a>
     </footer>
   </div>
 
 <script>
-const boardInput = document.getElementById('board');
-const datalist   = document.getElementById('boards');
-const goBtn      = document.getElementById('go');
-const hint       = document.getElementById('hint');
-const panel      = document.getElementById('panel');
-const icon       = document.getElementById('icon');
-const titleEl    = document.getElementById('title');
-const metaEl     = document.getElementById('meta');
-const actionEl   = document.getElementById('action');
+const LS_KEY='thingino_builder_uid';
+const getUid=()=>localStorage.getItem(LS_KEY)||'';
+const setUid=u=>{ if(u) localStorage.setItem(LS_KEY,u); };
 
-let allowed = new Set();
-let polling = null;
+async function api(path, opts={}) {
+  opts.headers = Object.assign({'X-Builder-Uid':getUid()}, opts.headers||{});
+  let r, data=null;
+  try { r = await fetch(path, opts); } catch { return {ok:false,status:0,data:null}; }
+  try { data = await r.json(); } catch {}
+  if (data && data.uid) setUid(data.uid);
+  return {ok:r.ok, status:r.status, data};
+}
 
-function setHint(msg, bad=false) { hint.textContent = msg; hint.classList.toggle('bad', bad); }
+const $=id=>document.getElementById(id);
+const boardInput=$('board'), datalist=$('boards'), goBtn=$('go'), hint=$('hint');
+const picker=$('picker'), mybuild=$('mybuild');
 
-function validate() {
-  const v = boardInput.value.trim();
+let allowed=new Set();
+let maxConc=6, avgSecs=null;
+let you=null, youAt=0;
+
+const fmt=s=>{ s=Math.max(0,Math.floor(s)); const m=Math.floor(s/60), x=s%60; return `${m}:${String(x).padStart(2,'0')}`; };
+const mins=s=> s==null?'—':`~${Math.max(1,Math.round(s/60))} min`;
+
+function setHint(m,bad=false){ hint.textContent=m; hint.classList.toggle('bad',bad); }
+function validate(){
+  const v=boardInput.value.trim();
   goBtn.disabled = !allowed.has(v);
-  if (v && !allowed.has(v)) setHint('Not a known defconfig.', true);
-  else setHint(allowed.size ? `${allowed.size} camera profiles available.` : '');
+  if(v && !allowed.has(v)) setHint('Not a known defconfig.',true);
+  else setHint(allowed.size?`${allowed.size} camera profiles available.`:'');
 }
 
-async function loadBoards() {
-  try {
-    const r = await fetch('/api/defconfigs');
-    if (!r.ok) throw new Error(r.status);
-    const list = await r.json();
-    list.sort();
-    allowed = new Set(list);
-    datalist.innerHTML = list.map(b => `<option value="${b}">`).join('');
-    setHint(`${list.length} camera profiles available.`);
-  } catch (e) {
-    setHint('Could not load camera list — is the broker running?', true);
+async function loadBoards(){
+  const {ok,data}=await api('/api/defconfigs');
+  if(!ok||!Array.isArray(data)){ setHint('Could not load camera list — is the broker up?',true); return; }
+  data.sort(); allowed=new Set(data);
+  datalist.innerHTML=data.map(b=>`<option value="${b}">`).join('');
+  setHint(`${data.length} camera profiles available.`);
+}
+
+function renderGlobal(d){
+  const parts=[
+    `<b>${d.running}</b>/${d.max_concurrent} building`,
+    `<b>${d.queued}</b> queued`,
+    `typical build <b>${mins(d.avg_build_secs)}</b>`,
+  ];
+  $('stats').innerHTML = parts.join('<span class="sep">·</span>');
+  const banner=$('banner');
+  if(d.builds_enabled===false){ banner.textContent='⚠ Builds are temporarily disabled by the admin.'; banner.classList.add('show'); }
+  else banner.classList.remove('show');
+}
+
+const ACTIVE=new Set(['queued','running']);
+function renderYou(){
+  if(!you){ mybuild.classList.remove('show'); picker.style.display=''; return; }
+  picker.style.display = ACTIVE.has(you.state) ? 'none' : '';
+  mybuild.classList.add('show');
+  const head=$('mb-head'), icon=$('mb-icon'), title=$('mb-title'),
+        meta=$('mb-meta'), expire=$('mb-expire'), actions=$('mb-actions');
+  head.className='head'; icon.innerHTML=''; expire.textContent=''; actions.innerHTML='';
+  const liveElapsed = (you.elapsed_secs||0) + (Date.now()-youAt)/1000;
+  meta.innerHTML = `defconfig <code>${you.defconfig}</code><br>build id <code>${you.build_id}</code>`;
+
+  if(you.state==='queued'){
+    icon.innerHTML='<span class="spinner"></span>';
+    title.textContent=`Queued — position ${you.position}`;
+    actions.innerHTML='<button class="ghost" id="cancel">Cancel</button>';
+  } else if(you.state==='running'){
+    icon.innerHTML='<span class="spinner"></span>';
+    title.textContent=`Building… ${fmt(liveElapsed)}`;
+    actions.innerHTML='<button class="ghost" id="cancel">Cancel</button>';
+  } else if(you.state==='done'){
+    head.classList.add('ok'); title.textContent='✅ Build ready';
+    actions.innerHTML=`<a class="dl" href="${you.download_url}" download>Download firmware (.bin)</a><button class="ghost" id="again">Build another</button>`;
+    expire.textContent='Available for ~30 minutes, then removed.';
+  } else if(you.state==='failed'){
+    head.classList.add('err'); title.textContent='⚠ Build failed';
+    actions.innerHTML='<button id="again">Try again</button>';
+  } else if(you.state==='cancelled'){
+    head.classList.add('warn'); title.textContent='Cancelled';
+    actions.innerHTML='<button id="again">Build again</button>';
+  } else if(you.state==='expired'){
+    head.classList.add('warn'); title.textContent='Download window expired';
+    actions.innerHTML='<button id="again">Build again</button>';
   }
+  const c=$('cancel'); if(c) c.onclick=cancelBuild;
+  const a=$('again'); if(a) a.onclick=()=>{ you=null; renderYou(); boardInput.focus(); };
 }
 
-function showPanel(spin, title, html, metaHtml) {
-  panel.classList.add('show');
-  icon.outerHTML = spin
-    ? '<span class="spinner" id="icon"></span>'
-    : '<span id="icon"></span>';
-  document.getElementById('title').textContent = title;
-  metaEl.innerHTML = metaHtml || '';
-  actionEl.innerHTML = html || '';
+async function refresh(){
+  const {ok,data}=await api('/api/stats');
+  if(!ok||!data) return;
+  maxConc=data.max_concurrent||6; avgSecs=data.avg_build_secs;
+  renderGlobal(data);
+  you=data.you; youAt=Date.now();
+  renderYou();
 }
 
-function fmt(s) { const m = Math.floor(s/60), x = s%60; return `${m}:${String(x).padStart(2,'0')}`; }
-
-async function submit() {
-  const defconfig = boardInput.value.trim();
-  if (!allowed.has(defconfig)) return;
-  goBtn.disabled = true; boardInput.disabled = true;
-  if (polling) clearInterval(polling);
-
-  let res;
-  try {
-    res = await fetch('/api/build', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ defconfig }),
-    });
-  } catch {
-    return fail('Could not reach the broker.');
+async function submit(){
+  const defconfig=boardInput.value.trim();
+  if(!allowed.has(defconfig)) return;
+  goBtn.disabled=true;
+  const {ok,status,data}=await api('/api/build',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({defconfig})});
+  if(!ok){
+    setHint((data&&data.error)||`Request failed (${status}).`,true);
+    goBtn.disabled=false; return;
   }
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 429) return fail(data.error || 'Rate limited — try again later.');
-  if (!res.ok)            return fail(data.error || `Request failed (${res.status}).`);
-
-  const started = Date.now();
-  const tick = () => {
-    const el = Math.floor((Date.now() - started) / 1000);
-    showPanel(true, 'Building…',
-      `<span style="color:var(--muted);font-size:12.5px">Elapsed ${fmt(el)} — you can leave this open.</span>`,
-      `defconfig <code>${defconfig}</code><br>build id <code>${data.build_id}</code>`);
-  };
-  tick();
-
-  polling = setInterval(async () => {
-    tick();
-    try {
-      const s = await fetch(data.status_url);
-      const sj = await s.json();
-      if (sj.ready) {
-        clearInterval(polling); polling = null;
-        showPanel(false, '✅ Build ready',
-          `<a class="dl" href="${sj.download_url}" download>Download firmware (.bin)</a>`,
-          `defconfig <code>${defconfig}</code><br>build id <code>${data.build_id}</code>`);
-        titleEl.classList.add('ok');
-        boardInput.disabled = false;
-      }
-    } catch { /* keep polling */ }
-  }, 8000);
+  you={build_id:data.build_id, defconfig:data.defconfig, state:'queued', position:data.position, elapsed_secs:0};
+  youAt=Date.now(); renderYou();
+  refresh();
 }
 
-function fail(msg) {
-  if (polling) { clearInterval(polling); polling = null; }
-  showPanel(false, '⚠ ' + msg, '', '');
-  titleEl.classList.add('err');
-  goBtn.disabled = false; boardInput.disabled = false;
-  validate();
+async function cancelBuild(){
+  if(!you) return;
+  const btn=$('cancel'); if(btn){ btn.disabled=true; btn.textContent='Cancelling…'; }
+  await api(`/api/cancel/${you.build_id}`,{method:'POST'});
+  refresh();
 }
 
-boardInput.addEventListener('input', validate);
-boardInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !goBtn.disabled) submit(); });
-goBtn.addEventListener('click', submit);
+boardInput.addEventListener('input',validate);
+boardInput.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!goBtn.disabled) submit(); });
+goBtn.addEventListener('click',submit);
+
 loadBoards();
+refresh();
+setInterval(refresh, 5000);
+setInterval(()=>{ if(you && you.state==='running') renderYou(); }, 1000); // smooth elapsed
 </script>
 </body>
 </html>
