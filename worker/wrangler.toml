@@ -32,5 +32,12 @@ BUILD_TIMEOUT_SECS = "5400"
 # rate-limited and admin needs a session token, so cross-origin calls gain nothing.
 ALLOW_ORIGIN = "*"
 
-# Secret (NOT a var) — set with: wrangler secret put GITHUB_TOKEN
-#   a fine-grained PAT (Contents R/W + Actions R/W) or classic repo+workflow.
+# GitHub App (optional). With all three present, builds dispatch via a short-lived
+# App installation token, so runs are attributed to the App/bot — not a personal
+# PAT. Omit to fall back to the static GITHUB_TOKEN PAT (dual-mode).
+GITHUB_APP_ID = "4180528"
+GITHUB_APP_INSTALLATION_ID = "143466507"
+
+# Secrets (NOT vars) — set with `wrangler secret put <NAME>`:
+#   GITHUB_APP_PRIVATE_KEY   the App private key as PKCS#8 PEM (App auth), and/or
+#   GITHUB_TOKEN             a fine-grained PAT (Contents R/W + Actions R/W) fallback

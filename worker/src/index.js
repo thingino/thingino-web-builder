@@ -99,8 +99,45 @@ function ghHeaders(env, auth) {
   if (auth && env.GITHUB_TOKEN) h.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
   return h;
 }
-const ghFetch = (env, url, opts = {}) =>
-  fetch(url, { ...opts, headers: { ...ghHeaders(env, true), ...(opts.headers || {}) } });
+// Token for write calls: a GitHub App installation token (so runs are attributed
+// to the App/bot, not a personal PAT) when the App is configured, else the static
+// GITHUB_TOKEN PAT — dual-mode, like the VPS broker.
+const b64url = (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function importRsaKey(pem) {
+  const body = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  return crypto.subtle.importKey("pkcs8", b64ToBytes(body), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+}
+async function appJwt(env) {
+  const now = nowSec();
+  const enc = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)));
+  const data = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({ iat: now - 60, exp: now + 9 * 60, iss: env.GITHUB_APP_ID })}`;
+  const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", await importRsaKey(env.GITHUB_APP_PRIVATE_KEY), new TextEncoder().encode(data)));
+  return `${data}.${b64url(sig)}`;
+}
+async function installationToken(env) {
+  // Worker is stateless → cache the ~1h token in D1; reuse until 5 min before expiry.
+  const cached = await getSetting(env, "gh_inst_token");
+  const exp = parseInt((await getSetting(env, "gh_inst_token_exp")) || "0", 10);
+  if (cached && exp - nowSec() > 300) return cached;
+  const r = await fetch(`https://api.github.com/app/installations/${env.GITHUB_APP_INSTALLATION_ID}/access_tokens`, {
+    method: "POST", headers: { ...ghHeaders(env, false), Authorization: `Bearer ${await appJwt(env)}` },
+  });
+  if (!r.ok) throw new Error(`installation token ${r.status}`);
+  const j = await r.json();
+  await setSetting(env, "gh_inst_token", j.token);
+  await setSetting(env, "gh_inst_token_exp", String(Math.floor(new Date(j.expires_at).getTime() / 1000)));
+  return j.token;
+}
+async function githubToken(env) {
+  if (env.GITHUB_APP_ID && env.GITHUB_APP_INSTALLATION_ID && env.GITHUB_APP_PRIVATE_KEY) {
+    try { return await installationToken(env); } catch (_) { /* fall back to the PAT */ }
+  }
+  return env.GITHUB_TOKEN || null;
+}
+const ghFetch = async (env, url, opts = {}) => {
+  const tok = await githubToken(env);
+  return fetch(url, { ...opts, headers: { ...ghHeaders(env, false), ...(tok ? { Authorization: `Bearer ${tok}` } : {}), ...(opts.headers || {}) } });
+};
 
 // thingino pinned commit + defconfig list, cached in D1 settings (~5 min).
 async function resolveThingino(env) {

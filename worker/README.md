@@ -20,8 +20,11 @@ hourly limits; FIFO queue + concurrency cap; `(defconfig, commit)` dedup;
 audit events; and a full **admin panel** — TOTP 2FA, kill switch, clear logs, reset
 limits, live stats — with sessions in D1.
 
-The one piece not ported from the VPS broker is **GitHub App auth**; the Worker uses
-a static `GITHUB_TOKEN` secret (App auth would be Web Crypto RS256 JWT).
+**GitHub auth** is dual-mode: if a **GitHub App** is configured (`GITHUB_APP_ID` +
+`GITHUB_APP_INSTALLATION_ID` vars + `GITHUB_APP_PRIVATE_KEY` secret), the Worker
+mints short-lived installation tokens (Web Crypto RS256 JWT → installation token,
+cached ~1 h in D1) and builds are attributed to the **App/bot** — not a personal
+PAT. Otherwise it falls back to a static `GITHUB_TOKEN` PAT.
 
 ## Deploy
 
@@ -37,8 +40,14 @@ wrangler d1 create thingino-builder
 wrangler d1 execute thingino-builder --remote --file schema.sql
 
 # 3. Secrets (Cloudflare-side; persist across deploys, never in the repo)
+#    GitHub auth — pick one:
+#    (a) GitHub App (runs show as the bot): set GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID
+#        as [vars] in wrangler.toml, then the private key as a secret. Convert the
+#        downloaded PKCS#1 key first:  openssl pkcs8 -topk8 -nocrypt -in app.pem -out app-pkcs8.pem
+wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem
+#    (b) or a PAT (runs show as you):
 wrangler secret put GITHUB_TOKEN           # PAT: Contents R/W + Actions R/W
-wrangler secret put ADMIN_TOKEN            # admin password
+wrangler secret put ADMIN_TOKEN            # master break-glass password
 wrangler secret put ADMIN_TOTP_SECRET      # base32 TOTP seed (enroll in an authenticator)
 
 # 4. Deploy → prints the Worker URL
