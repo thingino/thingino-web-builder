@@ -1,0 +1,11 @@
+# Triggered by thingino-broker-update.path. Clears the marker, then runs
+# `podman auto-update`, which pulls a newer ghcr image for any unit labelled
+# AutoUpdate=registry (the broker) and restarts it. Runs on the host, so the
+# broker container itself never needs podman/socket access.
+[Unit]
+Description=Update the thingino-web-builder broker image
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/rm -f @DIR@/state/update.request
+ExecStart=/usr/bin/podman auto-update

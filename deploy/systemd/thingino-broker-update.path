@@ -1,0 +1,12 @@
+# Watches for the broker's update-request marker (dropped by the admin "Update"
+# button) and triggers the image update. Installed to /etc/systemd/system by
+# deploy.sh, which substitutes @DIR@ with the repo path.
+[Unit]
+Description=Watch for thingino-web-builder update requests
+
+[Path]
+PathExists=@DIR@/state/update.request
+Unit=thingino-broker-update.service
+
+[Install]
+WantedBy=multi-user.target

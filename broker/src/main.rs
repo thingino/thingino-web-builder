@@ -62,6 +62,7 @@ struct Config {
     ip_header: Option<String>,
     admin_token: Option<String>,
     admin_totp_secret: Option<String>,
+    update_marker: Option<String>,
 }
 
 /// Thingino's pinned commit + the buildable defconfig list AT that commit. Seeded
@@ -84,6 +85,7 @@ struct AppState {
     thingino: Arc<Mutex<Thingino>>,
     sessions: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     installation_token: Arc<Mutex<(Option<String>, i64)>>,
+    latest_release: Arc<Mutex<(Option<String>, i64)>>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -349,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         ip_header: std::env::var("IP_HEADER").ok().filter(|s| !s.is_empty()),
         admin_token: std::env::var("ADMIN_TOKEN").ok().filter(|s| !s.is_empty()),
         admin_totp_secret: std::env::var("ADMIN_TOTP_SECRET").ok().filter(|s| !s.is_empty()),
+        update_marker: std::env::var("UPDATE_MARKER_PATH").ok().filter(|s| !s.is_empty()),
     };
     let bind_addr = env_or("BIND_ADDR", "[::]:8080");
     let static_dir = env_or("STATIC_DIR", "web");
@@ -412,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
         })),
         sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
         installation_token: Arc::new(Mutex::new((None, 0))),
+        latest_release: Arc::new(Mutex::new((None, 0))),
     };
 
     {
@@ -429,6 +433,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/admin/login", post(admin_login))
         .route("/api/admin/stats", get(admin_stats))
         .route("/api/admin/toggle", post(admin_toggle))
+        .route("/api/admin/update", post(admin_update))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state);
 
@@ -696,6 +701,9 @@ async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Response
     if !session_ok(&headers, &st) {
         return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
     }
+    let current = version_string();
+    let latest = check_latest_release(&st).await;
+    let update_available = latest.as_ref().is_some_and(|l| l != &current);
     let conn = st.db.lock().unwrap();
     let mut counts = serde_json::Map::new();
     for s in ["queued", "running", "done", "failed", "cancelled", "expired"] {
@@ -719,6 +727,9 @@ async fn admin_stats(State(st): State<AppState>, headers: HeaderMap) -> Response
         "retention_secs": st.cfg.retention_secs,
         "recent_builds": recent_builds,
         "recent_events": recent_events,
+        "version": current,
+        "latest_version": latest,
+        "update_available": update_available,
     }))
     .into_response()
 }
@@ -737,6 +748,27 @@ async fn admin_toggle(State(st): State<AppState>, headers: HeaderMap, Json(body)
     log_event(&conn, "admin_toggle", None, None, None, &format!("builds_enabled={}", body.enabled));
     drop(conn);
     Json(json!({ "builds_enabled": body.enabled })).into_response()
+}
+
+/// UI-triggered self-update: drop a marker file that a host systemd path-unit watches,
+/// which runs `podman auto-update` (pull newer image + restart). The broker gets no
+/// host/socket access — it only touches a file on a shared volume.
+async fn admin_update(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if !session_ok(&headers, &st) {
+        return json_err(StatusCode::UNAUTHORIZED, "admin auth required");
+    }
+    let Some(path) = st.cfg.update_marker.as_deref() else {
+        return json_err(StatusCode::NOT_IMPLEMENTED, "self-update is not configured on this deployment");
+    };
+    match std::fs::write(path, "update\n") {
+        Ok(_) => {
+            let conn = st.db.lock().unwrap();
+            log_event(&conn, "admin_update", None, None, None, "self-update requested");
+            drop(conn);
+            Json(json!({ "ok": true, "status": "update requested — the broker will restart on the new image shortly" })).into_response()
+        }
+        Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not write update marker: {e}")),
+    }
 }
 
 // ---- query helpers --------------------------------------------------------
@@ -1201,6 +1233,33 @@ async fn mint_installation_token(st: &AppState) -> anyhow::Result<(String, i64)>
     let v: serde_json::Value = resp.json().await?;
     let token = v["token"].as_str().ok_or_else(|| anyhow::anyhow!("no token in response"))?.to_string();
     Ok((token, nowt + 3300)) // ~1h tokens; refresh at 55 min
+}
+
+/// Latest published release tag (e.g. "v1.2.0"), cached ~10 min; None if no release yet.
+async fn check_latest_release(st: &AppState) -> Option<String> {
+    {
+        let c = st.latest_release.lock().unwrap();
+        if now() - c.1 < 600 {
+            return c.0.clone();
+        }
+    }
+    let url = format!("https://api.github.com/repos/{}/releases/latest", st.cfg.github_repo);
+    let tag = match st
+        .http
+        .get(&url)
+        .bearer_auth(github_token(st).await)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            r.json::<serde_json::Value>().await.ok().and_then(|v| v["tag_name"].as_str().map(str::to_string))
+        }
+        _ => None,
+    };
+    *st.latest_release.lock().unwrap() = (tag.clone(), now());
+    tag
 }
 
 async fn dispatch_build(st: &AppState, build_id: &str, defconfig: &str, commit: Option<&str>) -> anyhow::Result<()> {

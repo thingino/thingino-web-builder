@@ -13,6 +13,9 @@ AutoUpdate=registry
 EnvironmentFile=@DIR@/.env
 Environment=IP_HEADER=X-Real-IP
 Volume=thingino-broker-data:/data
+# UI-triggered self-update: broker drops a marker here; the host path-unit watches it.
+Volume=@DIR@/state:/state:z
+Environment=UPDATE_MARKER_PATH=/state/update.request
 # GitHub App auth (instead of GITHUB_TOKEN): drop app-key.pem in the repo dir,
 # uncomment the mount below, and set GITHUB_APP_KEY_PATH=/app/app-key.pem in .env.
 #Volume=@DIR@/app-key.pem:/app/app-key.pem:ro,Z

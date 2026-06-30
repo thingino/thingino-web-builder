@@ -50,6 +50,12 @@
     <span class="small muted ms-auto" id="kill-extra"></span>
   </div></div>
 
+  <div class="card mb-3"><div class="card-body d-flex align-items-center gap-3 flex-wrap">
+    <div>Version <code id="ver">…</code> <span id="upd-badge"></span></div>
+    <button id="upd-btn" class="btn btn-sm btn-thingino" style="display:none">Update now</button>
+    <span class="small muted ms-auto" id="upd-extra"></span>
+  </div></div>
+
   <div class="row g-2 mb-3" id="tiles"></div>
 
   <div class="card mb-3">
@@ -102,6 +108,14 @@ async function refresh(){
   $('kill-state').innerHTML=enabled?'<span class="text-success">ENABLED</span>':'<span class="text-danger">DISABLED</span>';
   const kb=$('kill-btn'); kb.textContent=enabled?'Disable builds':'Enable builds'; kb.className='btn btn-sm '+(enabled?'btn-outline-danger':'btn-thingino');
   $('kill-extra').textContent=`cap ${d.max_concurrent} concurrent · retention ${Math.round(d.retention_secs/60)} min`;
+  $('ver').textContent=d.version||'—';
+  if(d.update_available){
+    $('upd-badge').innerHTML='<span class="badge text-bg-warning ms-1">update available → '+(d.latest_version||'')+'</span>';
+    $('upd-btn').style.display=''; $('upd-btn').dataset.v=d.latest_version||'';
+  } else {
+    $('upd-badge').innerHTML=d.latest_version?'<span class="text-success small ms-1">up to date</span>':'';
+    $('upd-btn').style.display='none';
+  }
   const c=d.counts||{};
   $('tiles').innerHTML=[['running',c.running],['queued',c.queued],['done',c.done],['failed',c.failed],['cancelled',c.cancelled],['expired',c.expired],['24h',d.last24h],['avg build',d.avg_build_secs?Math.round(d.avg_build_secs/60)+'m':'—']].map(([l,n])=>tile(l,n)).join('');
   $('builds-body').innerHTML=(d.recent_builds||[]).map(b=>`<tr><td><code>${short(b.build_id)}</code></td><td>${b.defconfig}</td><td>${pill(b.state)}</td><td><code>${short(b.uid)}</code></td><td><code>${b.ip||''}</code></td><td>${ago(b.created_ts)}</td><td>${dur(b.dispatched_ts,b.finished_ts)}</td><td><code>${b.run_id||''}</code></td></tr>`).join('');
@@ -109,12 +123,21 @@ async function refresh(){
   $('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 async function toggle(){ await fetch('/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
+async function doUpdate(){
+  const v=$('upd-btn').dataset.v||'';
+  if(!confirm('Update the builder'+(v?' to '+v:'')+' and restart? In-progress builds keep running on GitHub.')) return;
+  $('upd-btn').disabled=true; $('upd-extra').textContent='requesting update…';
+  try{ const r=await fetch('/api/admin/update',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); const j=await r.json().catch(()=>({})); $('upd-extra').textContent=r.ok?(j.status||'update requested'):(j.error||'update failed'); }
+  catch{ $('upd-extra').textContent='update failed'; }
+  $('upd-btn').disabled=false;
+}
 
 $('login').onclick=login;
 $('token').addEventListener('keydown',e=>{ if(e.key==='Enter') $('totp').focus(); });
 $('totp').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
 $('logout').onclick=logout;
 $('kill-btn').onclick=toggle;
+$('upd-btn').onclick=doUpdate;
 if(tok()){ adminGet().then(show).catch(()=>sessionStorage.removeItem(TK)); }
 setInterval(()=>{ if($('app').style.display!=='none') refresh(); },5000);
 </script>
