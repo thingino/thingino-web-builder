@@ -123,9 +123,12 @@ const $=id=>document.getElementById(id);
 const boardInput=$('board'), datalist=$('boards'), goBtn=$('go'), hint=$('hint');
 const picker=$('picker'), mybuild=$('mybuild');
 
+const MY_KEY='thingino_my_build';
 let allowed=new Set();
-let maxConc=6, avgSecs=null;
+let maxConc=6, avgSecs=null, curCommit=null;
+let myId=localStorage.getItem(MY_KEY)||null;
 let you=null, youAt=0;
+function setMy(id){ myId=id; if(id) localStorage.setItem(MY_KEY,id); else localStorage.removeItem(MY_KEY); }
 
 const fmt=s=>{ s=Math.max(0,Math.floor(s)); const m=Math.floor(s/60), x=s%60; return `${m}:${String(x).padStart(2,'0')}`; };
 const mins=s=> s==null?'—':`~${Math.max(1,Math.round(s/60))} min`;
@@ -147,11 +150,13 @@ async function loadBoards(){
 }
 
 function renderGlobal(d){
+  curCommit=d.commit||null;
   const parts=[
     `<b>${d.running}</b>/${d.max_concurrent} building`,
     `<b>${d.queued}</b> queued`,
     `typical build <b>${mins(d.avg_build_secs)}</b>`,
   ];
+  if(curCommit) parts.push(`thingino @ <b>${curCommit.slice(0,7)}</b>`);
   $('stats').innerHTML = parts.join('<span class="sep">·</span>');
   const banner=$('banner');
   if(d.builds_enabled===false){ banner.textContent='⚠ Builds are temporarily disabled by the admin.'; banner.classList.add('show'); }
@@ -168,6 +173,7 @@ function renderYou(){
   head.className='head'; icon.innerHTML=''; expire.textContent=''; actions.innerHTML='';
   const liveElapsed = (you.elapsed_secs||0) + (Date.now()-youAt)/1000;
   meta.innerHTML = `defconfig <code>${you.defconfig}</code><br>build id <code>${you.build_id}</code>`;
+  if(you.deduped){ meta.innerHTML += '<br><span style="color:var(--accent)">this exact image already existed — reused it</span>'; }
 
   if(you.state==='queued'){
     icon.innerHTML='<span class="spinner"></span>';
@@ -197,16 +203,21 @@ function renderYou(){
     actions.innerHTML='<button id="again">Build again</button>';
   }
   const c=$('cancel'); if(c) c.onclick=cancelBuild;
-  const a=$('again'); if(a) a.onclick=()=>{ you=null; renderYou(); boardInput.focus(); };
+  const a=$('again'); if(a) a.onclick=()=>{ setMy(null); you=null; renderYou(); boardInput.focus(); };
 }
 
 async function refresh(){
   const {ok,data}=await api('/api/stats');
-  if(!ok||!data) return;
-  maxConc=data.max_concurrent||6; avgSecs=data.avg_build_secs;
-  renderGlobal(data);
-  you=data.you; youAt=Date.now();
-  renderYou();
+  if(ok&&data){
+    maxConc=data.max_concurrent||6; avgSecs=data.avg_build_secs;
+    renderGlobal(data);
+    if(!myId && data.you){ setMy(data.you.build_id); }   // recover last build on load
+  }
+  if(myId){
+    const s=await api('/api/status/'+myId);
+    if(s.status===404){ setMy(null); you=null; renderYou(); }           // build gone (expired/reaped)
+    else if(s.ok&&s.data&&s.data.state){ you=s.data; youAt=Date.now(); renderYou(); }
+  } else { you=null; renderYou(); }
 }
 
 async function submit(){
@@ -218,7 +229,8 @@ async function submit(){
     setHint((data&&data.error)||`Request failed (${status}).`,true);
     goBtn.disabled=false; return;
   }
-  you={build_id:data.build_id, defconfig:data.defconfig, state:'queued', position:data.position, elapsed_secs:0};
+  setMy(data.build_id);
+  you={build_id:data.build_id, defconfig:data.defconfig, state:data.state||'queued', position:data.position||0, elapsed_secs:0, download_url:data.download_url, deduped:data.deduped};
   youAt=Date.now(); renderYou();
   refresh();
 }

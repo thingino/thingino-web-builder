@@ -17,6 +17,8 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1"
 libc = "0.2"
+hmac = "0.12"
+sha1 = "0.10"
 
 [profile.release]
 opt-level = "z"

@@ -39,8 +39,9 @@
 <body>
 <div id="gate" class="gate">
   <h1>admin<span class="dot">.</span></h1>
-  <p class="muted">Enter the admin token.</p>
+  <p class="muted">Enter the admin token and your 6-digit code.</p>
   <input id="token" type="password" placeholder="ADMIN_TOKEN" autocomplete="off">
+  <input id="totp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="2FA code (if enabled)" autocomplete="off">
   <button id="login">Sign in</button>
   <div class="err" id="gate-err"></div>
 </div>
@@ -86,9 +87,12 @@ async function adminGet(){
 }
 
 async function login(){
-  sessionStorage.setItem(TK,$('token').value.trim());
-  try { await adminGet(); show(); }
-  catch { $('gate-err').textContent='Invalid token.'; sessionStorage.removeItem(TK); }
+  $('gate-err').textContent='';
+  const r=await fetch('/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({token:$('token').value.trim(), totp:$('totp').value.trim()})});
+  const d=await r.json().catch(()=>({}));
+  if(r.ok && d.session){ sessionStorage.setItem(TK,d.session); show(); }
+  else { $('gate-err').textContent=d.error||'Invalid credentials.'; sessionStorage.removeItem(TK); }
 }
 function show(){ $('gate').style.display='none'; $('app').style.display=''; refresh(); }
 function logout(){ sessionStorage.removeItem(TK); location.reload(); }
@@ -127,7 +131,8 @@ async function toggle(){
 }
 
 $('login').onclick=login;
-$('token').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+$('token').addEventListener('keydown',e=>{ if(e.key==='Enter') $('totp').focus(); });
+$('totp').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
 $('logout').onclick=logout;
 $('kill-btn').onclick=toggle;
 

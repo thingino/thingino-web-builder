@@ -24,6 +24,9 @@ on:
       build_id:
         description: "Build id (uuid). Blank = auto-generate."
         required: false
+      commit:
+        description: "thingino commit/ref to build (blank = master)"
+        required: false
 
 # No GitHub-side concurrency group: the broker is the gate (global cap of 6),
 # so dispatched builds run in parallel here.
@@ -58,6 +61,7 @@ jobs:
           # Untrusted input enters as env vars — never interpolated into the script body.
           RAW_DEFCONFIG: ${{ github.event.client_payload.defconfig || github.event.inputs.defconfig }}
           RAW_BUILD_ID: ${{ github.event.client_payload.build_id || github.event.inputs.build_id }}
+          RAW_COMMIT: ${{ github.event.client_payload.commit || github.event.inputs.commit }}
         run: |
           set -euo pipefail
           DEFCONFIG="${RAW_DEFCONFIG:-}"
@@ -71,11 +75,19 @@ jobs:
           if [[ ! "$BUILD_ID" =~ ^[a-f0-9-]{8,40}$ ]]; then
             echo "::error::Invalid build_id: '$BUILD_ID'"; exit 1
           fi
+          # commit: a 7-40 hex sha or 'master' (default)
+          COMMIT="${RAW_COMMIT:-}"
+          if [[ -z "$COMMIT" ]]; then COMMIT="${THINGINO_REF}"; fi
+          if [[ ! "$COMMIT" =~ ^(master|[0-9a-f]{7,40})$ ]]; then
+            echo "::error::Invalid commit: '$COMMIT'"; exit 1
+          fi
           echo "defconfig=$DEFCONFIG" >> "$GITHUB_OUTPUT"
           echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           {
             echo "## web-build \`$BUILD_ID\`"
             echo "- defconfig: \`$DEFCONFIG\`"
+            echo "- commit: \`$COMMIT\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install GitHub CLI
@@ -104,7 +116,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ${{ env.THINGINO_REPO }}
-          ref: ${{ env.THINGINO_REF }}
+          ref: ${{ steps.in.outputs.commit }}
           submodules: "true"
           fetch-depth: "1"
           path: thingino
