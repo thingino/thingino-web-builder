@@ -1,0 +1,216 @@
+# Thingino web-builder — CI build worker.
+#
+# Triggered by the broker via repository_dispatch:
+#   event_type: web-build
+#   client_payload: { "build_id": "<uuid>", "defconfig": "<board token>" }
+#
+# Mirrors the proven recipe in themactep/thingino-firmware/.github/workflows/
+# firmware-x86_64.yaml (debian:forky container, apt deps, ccache + dl-cache),
+# but builds exactly ONE board and publishes <build_id>.bin to a rolling
+# pre-release tag for anonymous CDN download.
+name: web-build
+run-name: "web-build ${{ github.event.client_payload.build_id || github.event.inputs.build_id }} · ${{ github.event.client_payload.defconfig || github.event.inputs.defconfig }}"
+
+on:
+  repository_dispatch:
+    types: [web-build]
+  # Manual trigger for smoke-testing the chain without the broker.
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: "Board defconfig token (e.g. atom_cam2_t31x_gc2053_atbm6031)"
+        required: true
+        default: atom_cam2_t31x_gc2053_atbm6031
+      build_id:
+        description: "Build id (uuid). Blank = auto-generate."
+        required: false
+
+# Serialize builds: queue them, don't cancel, so cache/runner contention stays sane.
+concurrency:
+  group: web-build-serial
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # create the rolling release + upload assets
+
+env:
+  THINGINO_REPO: themactep/thingino-firmware
+  THINGINO_REF: master                        # build from master HEAD → output/master/...
+  DL_CACHE_REPO: themactep/thingino-firmware  # hosts buildroot-dl-cache releases
+  ROLLING_TAG: web-builds
+  BR2_DL_DIR: ~/dl
+  FORCE_UNSAFE_CONFIGURE: 1
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  TERM: linux
+  TZ: UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: debian:forky
+    steps:
+      - name: Validate + resolve inputs
+        id: in
+        env:
+          # Untrusted input enters as env vars — never interpolated into the script body.
+          RAW_DEFCONFIG: ${{ github.event.client_payload.defconfig || github.event.inputs.defconfig }}
+          RAW_BUILD_ID: ${{ github.event.client_payload.build_id || github.event.inputs.build_id }}
+        run: |
+          set -euo pipefail
+          DEFCONFIG="${RAW_DEFCONFIG:-}"
+          BUILD_ID="${RAW_BUILD_ID:-}"
+          # defconfig: lowercase letters, digits, underscore only (no path / shell metachars)
+          if [[ ! "$DEFCONFIG" =~ ^[a-z0-9_]+$ ]]; then
+            echo "::error::Invalid defconfig token: '$DEFCONFIG'"; exit 1
+          fi
+          # build_id: uuid shape (hex + dashes); generate if absent
+          if [[ -z "$BUILD_ID" ]]; then BUILD_ID="$(cat /proc/sys/kernel/random/uuid)"; fi
+          if [[ ! "$BUILD_ID" =~ ^[a-f0-9-]{8,40}$ ]]; then
+            echo "::error::Invalid build_id: '$BUILD_ID'"; exit 1
+          fi
+          echo "defconfig=$DEFCONFIG" >> "$GITHUB_OUTPUT"
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "## web-build \`$BUILD_ID\`"
+            echo "- defconfig: \`$DEFCONFIG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install GitHub CLI
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y curl ca-certificates
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          apt-get update
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          apt-get install -y --no-install-recommends --no-install-suggests \
+            autoconf build-essential bc cmake cpio curl ca-certificates file git gh make gawk jq \
+            lzop m4 p7zip-full perl python3 python3-setuptools procps rsync tzdata u-boot-tools \
+            unzip wget libncurses-dev swig python3-dev libssl-dev
+
+      - name: Set timezone
+        run: ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime && echo "${TZ}" > /etc/timezone
+
+      - name: Checkout thingino (pinned)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.THINGINO_REPO }}
+          ref: ${{ env.THINGINO_REF }}
+          submodules: "true"
+          fetch-depth: "1"
+          path: thingino
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE/thingino"
+
+      - name: Verify defconfig exists
+        env:
+          DEFCONFIG: ${{ steps.in.outputs.defconfig }}
+        run: |
+          set -euo pipefail
+          test -f "thingino/configs/cameras/${DEFCONFIG}/${DEFCONFIG}_defconfig" \
+            || { echo "::error::Unknown defconfig: ${DEFCONFIG}"; exit 1; }
+
+      - name: Configure cache-key vars
+        run: |
+          echo "WEEK_NUMBER=$(date +%U)" >> "$GITHUB_ENV"
+          echo "CURRENT_YEAR=$(date +%Y)" >> "$GITHUB_ENV"
+
+      - name: Setup cache directories
+        run: mkdir -p ~/.buildroot-ccache ~/dl
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        if: always()
+        with:
+          path: ~/.buildroot-ccache
+          key: Linux-ccache-${{ steps.in.outputs.defconfig }}-${{ env.CURRENT_YEAR }}-week-${{ env.WEEK_NUMBER }}
+          restore-keys: |
+            Linux-ccache-${{ steps.in.outputs.defconfig }}-${{ env.CURRENT_YEAR }}-
+            Linux-ccache-${{ steps.in.outputs.defconfig }}-
+
+      - name: Find buildroot-dl-cache release
+        id: find_release
+        run: |
+          set -euo pipefail
+          RELEASE_TAG=$(gh release list --repo "$DL_CACHE_REPO" --json name,tagName \
+            | jq -r '.[] | select(.name=="buildroot-dl-cache") | .tagName' | sort -r | head -1 || echo "")
+          if [ -z "$RELEASE_TAG" ]; then
+            RELEASE_TAG=$(gh release list --repo "$DL_CACHE_REPO" --json tagName \
+              | jq -r '.[] | select(.tagName | startswith("update_cache")) | .tagName' | head -n1 || echo "")
+          fi
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          if [ -n "$RELEASE_TAG" ]; then echo "found=true" >> "$GITHUB_OUTPUT"; else echo "found=false" >> "$GITHUB_OUTPUT"; fi
+          echo "dl-cache tag: ${RELEASE_TAG:-<none>}"
+
+      - name: Download + extract dl-cache
+        if: steps.find_release.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dl-cache
+          gh release download "${{ steps.find_release.outputs.release_tag }}" \
+            --repo "$DL_CACHE_REPO" --pattern "buildroot-dl-cache*" --dir /tmp/dl-cache || true
+          if [ -z "$(ls -A /tmp/dl-cache/ 2>/dev/null || true)" ]; then
+            echo "No dl-cache assets fetched; buildroot will download sources cold."; exit 0
+          fi
+          cd ~
+          if ls /tmp/dl-cache/buildroot-dl-cache.zip.* >/dev/null 2>&1; then
+            7z x /tmp/dl-cache/buildroot-dl-cache.zip.001 -y
+          else
+            7z x /tmp/dl-cache/buildroot-dl-cache.zip -y
+          fi
+          if [ -d ~/dl/dl ]; then mv ~/dl/dl/* ~/dl/ && rm -rf ~/dl/dl; fi
+          echo "dl-cache files: $(find ~/dl -type f | wc -l)"
+
+      - name: Build firmware
+        env:
+          DEFCONFIG: ${{ steps.in.outputs.defconfig }}
+        run: |
+          set -euo pipefail
+          cd thingino
+          BOARD="$DEFCONFIG" make fast WORKFLOW=1
+
+      - name: Collect image
+        env:
+          DEFCONFIG: ${{ steps.in.outputs.defconfig }}
+          BUILD_ID: ${{ steps.in.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          FULL_FW=$(find thingino/output -type f -name "thingino-${DEFCONFIG}.bin" ! -name "*update.bin" | head -n1)
+          if [ -z "$FULL_FW" ]; then
+            echo "::error::No firmware image produced for ${DEFCONFIG}"
+            find thingino/output -maxdepth 4 -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "Image: $FULL_FW ($(du -h "$FULL_FW" | cut -f1))"
+          mkdir -p out
+          cp "$FULL_FW" "out/${BUILD_ID}.bin"
+          ( cd out && sha256sum "${BUILD_ID}.bin" > "${BUILD_ID}.bin.sha256sum" )
+
+      - name: Publish to rolling release
+        env:
+          BUILD_ID: ${{ steps.in.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          if ! gh release view "$ROLLING_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$ROLLING_TAG" --repo "$REPO" --prerelease \
+              --title "Web builder images" \
+              --notes "Rolling pre-release. Each asset is a user-requested build named <build_id>.bin."
+          fi
+          gh release upload "$ROLLING_TAG" \
+            "out/${BUILD_ID}.bin" "out/${BUILD_ID}.bin.sha256sum" --repo "$REPO" --clobber
+          URL="https://github.com/${REPO}/releases/download/${ROLLING_TAG}/${BUILD_ID}.bin"
+          echo "Download: $URL"
+          echo "- image: [\`${BUILD_ID}.bin\`](${URL})" >> "$GITHUB_STEP_SUMMARY"
