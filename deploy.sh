@@ -12,7 +12,8 @@ mkdir -p certs
 
 SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
 echo "==> building image (BUILD_SHA=$SHA)"
-podman build --build-arg BUILD_SHA="$SHA" -t localhost/thingino-web-builder:latest .
+# --network=host so the build's cargo/apt can use the host's DNS (rescues LXC/CI hosts).
+podman build --network=host --build-arg BUILD_SHA="$SHA" -t localhost/thingino-web-builder:latest .
 
 echo "==> installing Quadlet units to /etc/containers/systemd"
 install -d /etc/containers/systemd
