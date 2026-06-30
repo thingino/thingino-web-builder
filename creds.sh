@@ -15,11 +15,11 @@ set_kv()  { sed -i "s|^$1=.*|$1=$2|" .env; }
 uri()     { echo "otpauth://totp/thingino-builder:admin?secret=$1&issuer=thingino-builder&algorithm=SHA1&digits=6&period=30"; }
 qr()      { command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 "$1" || echo "  $1"; }
 apply()   {
-  if docker compose version >/dev/null 2>&1; then
-    docker compose up -d --force-recreate --no-deps broker >/dev/null 2>&1 \
-      && echo "broker recreated — change applied, existing admin sessions invalidated."
+  if systemctl cat thingino-broker.service >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
+    systemctl restart thingino-broker.service \
+      && echo "broker restarted — change applied, existing admin sessions invalidated."
   else
-    echo "note: recreate the broker to apply  ->  docker compose up -d --force-recreate broker"
+    echo "note: restart the broker to apply  ->  sudo systemctl restart thingino-broker"
   fi
 }
 

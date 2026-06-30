@@ -49,6 +49,7 @@ struct Config {
     rolling_tag: String,
     per_user_hourly: i64,
     per_ip_hourly: i64,
+    global_hourly: i64,
     max_concurrent: i64,
     max_queue: i64,
     retention_secs: i64,
@@ -78,6 +79,14 @@ fn env_i64(key: &str, default: i64) -> i64 {
 }
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Builder version: Cargo package version + git short-sha (baked via BUILD_SHA at build time).
+fn version_string() -> String {
+    match option_env!("BUILD_SHA") {
+        Some(sha) if !sha.is_empty() && sha != "dev" => format!("v{} ({sha})", env!("CARGO_PKG_VERSION")),
+        _ => format!("v{}", env!("CARGO_PKG_VERSION")),
+    }
 }
 
 fn valid_build_id(s: &str) -> bool {
@@ -296,6 +305,7 @@ async fn main() -> anyhow::Result<()> {
         rolling_tag: env_or("ROLLING_TAG", "web-builds"),
         per_user_hourly: env_i64("PER_USER_HOURLY_LIMIT", 2),
         per_ip_hourly: env_i64("PER_IP_HOURLY_LIMIT", 3),
+        global_hourly: env_i64("GLOBAL_HOURLY_LIMIT", 20),
         max_concurrent: env_i64("MAX_CONCURRENT_BUILDS", 6),
         max_queue: env_i64("MAX_QUEUE", 50),
         retention_secs: env_i64("RETENTION_SECS", 1800),
@@ -421,6 +431,7 @@ async fn get_stats(State(st): State<AppState>, headers: HeaderMap) -> Response {
             "avg_build_secs": avg.map(|v| v.round() as i64),
             "builds_enabled": enabled,
             "commit": commit,
+            "version": version_string(),
             "you": you,
             "uid": uid,
         }),
@@ -472,6 +483,18 @@ async fn post_build(
         let queued_now: i64 = conn.query_row("SELECT count(*) FROM builds WHERE state='queued'", [], |r| r.get(0)).unwrap_or(0);
         if queued_now >= st.cfg.max_queue {
             return json_uid(StatusCode::SERVICE_UNAVAILABLE, &uid, json!({"error": "the build queue is full, try again shortly"}));
+        }
+        // Global hourly cap across everyone (counts builds that actually got going).
+        let global_n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM builds WHERE created_ts > ?1 AND NOT (state='cancelled' AND dispatched_ts IS NULL)",
+                [cutoff],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if global_n >= st.cfg.global_hourly {
+            log_event(&conn, "rate_limited", None, Some(&uid), Some(&ip), "global hourly limit");
+            return json_uid(StatusCode::TOO_MANY_REQUESTS, &uid, json!({"error": format!("the builder is at its hourly limit ({}/hr) — try again later", st.cfg.global_hourly)}));
         }
         // Builds count toward a limit unless they were cancelled before ever dispatching.
         let user_n: i64 = conn

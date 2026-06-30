@@ -1,36 +1,41 @@
-# Deploying the Thingino web-builder
+# Deploying the Thingino web-builder (Podman)
 
-Runs as two containers: the **broker** (Rust control plane + static UI) and
-**Caddy** (TLS termination + reverse proxy). The actual firmware builds run on
-GitHub Actions — the VPS only orchestrates, so a tiny box is plenty.
+Two containers managed by **systemd via Podman Quadlet** — no daemon:
+
+- **broker** — the Rust control plane + static UI (this image).
+- **caddy** — TLS termination + reverse proxy, on the **host network** so it binds
+  80/443 directly and sees real client IPs (v4 & v6).
+
+The actual firmware builds run on GitHub Actions, so a tiny VPS is plenty.
 
 ## Prerequisites
 
-- A VPS with **Docker** + **Docker Compose**.
-- A **domain** with an A/AAAA record pointing at the VPS, and ports **80 + 443** open.
+- A VPS with **Podman** (5+ recommended) and **systemd**.
+- A **domain** with an A/AAAA record at the VPS; ports **80 + 443** open.
 - A **GitHub token** for the builder repo (see below).
 
-## Three-step deploy
+## Deploy
 
 ```bash
-git clone https://github.com/gtxaspec/thingino-web-builder.git
-cd thingino-web-builder
+sudo git clone https://github.com/gtxaspec/thingino-web-builder.git /opt/thingino-web-builder
+cd /opt/thingino-web-builder
 
-./setup.sh                       # generates ADMIN_TOKEN + ADMIN_TOTP_SECRET, prints a QR
+sudo ./setup.sh                  # generates ADMIN_TOKEN + ADMIN_TOTP_SECRET, prints a QR
 #   -> scan the QR into Google Authenticator
 #   -> edit .env: set DOMAIN, GITHUB_REPO, GITHUB_TOKEN
 
-docker compose up -d --build
+sudo ./deploy.sh                 # builds the image, installs Quadlet units, starts services
 ```
 
-That's it — open `https://<DOMAIN>`. Admin panel at `https://<DOMAIN>/admin.html`
-(admin token + 6-digit code). Caddy fetches a Let's Encrypt cert automatically on
-first start.
+Open `https://<DOMAIN>` — admin at `/admin.html` (token + 6-digit code). Caddy
+fetches a Let's Encrypt cert automatically on first start.
+
+> Clone to a stable path like `/opt/thingino-web-builder`: the Quadlet units
+> reference this directory for `.env`, the `Caddyfile`, and `./certs`.
 
 ## The GitHub token
 
-Least-privilege **fine-grained PAT**, scoped to **only the builder repo**
-(`gtxaspec/thingino-web-builder`):
+Least-privilege **fine-grained PAT**, scoped to **only the builder repo**:
 
 | Permission | Access | Why |
 |---|---|---|
@@ -38,59 +43,43 @@ Least-privilege **fine-grained PAT**, scoped to **only the builder repo**
 | Actions  | Read and write | list runs, cancel run, delete run (log cleanup) |
 | Metadata | Read-only | mandatory |
 
-(Resolving thingino's `master` commit is an unauthenticated public read, so the
-token needs no access to `themactep/thingino-firmware`.) A **classic PAT** with
-`repo` + `workflow` scopes works too, with broader reach.
+Resolving thingino's commit is an unauthenticated public read, so the token needs
+no access to `themactep/thingino-firmware`. A classic PAT with `repo` + `workflow`
+also works.
 
 ## TLS
 
-- **Default — automatic.** Just set `DOMAIN`; Caddy provisions and renews a free
-  Let's Encrypt cert. Nothing to provide.
-- **Bring your own cert** (wildcard, Cloudflare origin cert, internal CA): put
-  `cert.pem` + `key.pem` in `./certs`, then uncomment the `tls` line in `Caddyfile`
-  and `docker compose up -d`.
-
-## Operating it
-
-- **Update:** `git pull && docker compose up -d --build`
-- **Logs:** `docker compose logs -f broker` / `... caddy`
-- **Toggle builds / view stats:** the admin panel (kill switch + live metrics).
-- **Data:** builds/events/settings live in the `broker-data` volume (SQLite) and
-  survive restarts/redeploys; certs live in `caddy-data`.
-- **Tuning:** the rate limits, concurrency cap, and retention window are env vars
-  in `.env` (see `.env.example`); change and `docker compose up -d`.
-
-## Admin credentials
-
-`ADMIN_TOKEN` and `ADMIN_TOTP_SECRET` are env vars in `.env`, read at broker
-startup. Manage them with `./creds.sh`:
-
-```bash
-./creds.sh show           # print the current token + TOTP secret (+ QR)
-./creds.sh rotate-token   # new admin token, recreate broker, print it
-./creds.sh rotate-totp    # new 2FA secret, recreate broker, print a QR to re-enroll
-```
-
-By hand: edit `.env`, then `docker compose up -d --force-recreate broker`.
-Recreating the broker applies the change and clears all logged-in admin sessions.
+- **Automatic (default):** set `DOMAIN`; Caddy provisions + renews a free Let's
+  Encrypt cert. Nothing to provide.
+- **Bring your own:** put `cert.pem` + `key.pem` in `./certs`, uncomment the `tls`
+  line in `Caddyfile`, then `sudo ./deploy.sh`.
 
 ## IPv6 & real client IPs
 
-Caddy runs on the **host network**, so it binds the host's IPv4 **and IPv6**
-directly and the broker sees the **true client IP** — Docker's bridge would
-publish IPv4 only and NAT the source away. IPv6 visitors reach the service and
-the per-IP limit buckets them by **/64**, as long as the VPS host itself has a
-public IPv6 address and ports 80/443 are free.
+Caddy runs on the host network, so it binds the host's IPv4 **and IPv6** and the
+broker sees the **true client IP** — the per-IP limit buckets IPv6 by /64, IPv4 by
+/32. Just make sure the VPS host has a public IPv6 address.
 
-Prefer a fully isolated bridge instead of host networking? Put Caddy back on the
-bridge with published `80:80`/`443:443`, point `reverse_proxy` at `broker:8080`,
-and enable IPv6 on the Docker daemon — `/etc/docker/daemon.json`:
-`{"ipv6": true, "ip6tables": true, "userland-proxy": false, "fixed-cidr-v6": "fd00:d0::/48"}`
-then restart Docker. `userland-proxy: false` is what preserves the real source IP.
+Rootless instead of rootful? It works, but privileged ports need one of:
+`sysctl net.ipv4.ip_unprivileged_port_start=80`, or add
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` to the Caddy unit. Rootful avoids both.
 
-## No-Docker alternative
+## Operating it
 
-Prefer bare metal? Build `cargo build --release` in `broker/`, drop the binary +
-`web/` + `defconfigs.json` under `/opt/thingino-broker`, install the provided
-`thingino-build-broker.service` (systemd), and front it with Caddy or nginx for
-TLS. The binary is a singleton (flock) and reads the same env vars.
+- **Update:** `git pull && sudo ./deploy.sh` (rebuilds + restarts).
+- **Logs:** `journalctl -u thingino-broker -u thingino-caddy -f`
+- **Restart:** `systemctl restart thingino-broker thingino-caddy`
+- **Admin creds:** `./creds.sh show | rotate-token | rotate-totp` (edits `.env`,
+  restarts the broker, which also clears logged-in admin sessions).
+- **Limits / retention / concurrency:** env vars in `.env` (see `.env.example`) —
+  per-user **2/hr**, per-IP **3/hr**, global **20/hr**, **6** concurrent, 30-min
+  retention. Change and `sudo ./deploy.sh`.
+- **Data:** builds/events/settings persist in the `thingino-broker-data` volume
+  (SQLite); certs in `thingino-caddy-data`. Both survive restarts/redeploys.
+
+## Bare-binary alternative (no containers)
+
+`cargo build --release` in `broker/`, drop the binary + `web/` + `defconfigs.json`
+under `/opt/thingino-broker`, install `thingino-build-broker.service` (systemd),
+and front it with Caddy/nginx. The binary is a singleton (flock) and reads the
+same env vars.

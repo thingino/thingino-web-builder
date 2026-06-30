@@ -1,5 +1,7 @@
 # Build the broker, then ship a slim runtime image with the static frontend baked in.
 FROM rust:1-bookworm AS build
+ARG BUILD_SHA=dev
+ENV BUILD_SHA=$BUILD_SHA
 WORKDIR /src/broker
 COPY broker/Cargo.toml broker/Cargo.lock ./
 COPY broker/src ./src

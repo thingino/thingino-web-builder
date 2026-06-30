@@ -1,0 +1,21 @@
+# Quadlet unit (rootful): /etc/containers/systemd/thingino-broker.container
+# @DIR@ is substituted with the repo path by deploy.sh.
+[Unit]
+Description=Thingino web-builder broker
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/thingino-web-builder:latest
+EnvironmentFile=@DIR@/.env
+Environment=IP_HEADER=X-Real-IP
+Volume=thingino-broker-data:/data
+# Loopback only — reached by the host-networked Caddy.
+PublishPort=127.0.0.1:8080:8080
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

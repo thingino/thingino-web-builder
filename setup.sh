@@ -30,4 +30,4 @@ if command -v qrencode >/dev/null 2>&1; then qrencode -t ANSIUTF8 "$URI"; else e
 echo
 echo "Next:"
 echo "  1. edit .env  -> DOMAIN, GITHUB_REPO, GITHUB_TOKEN"
-echo "  2. docker compose up -d --build"
+echo "  2. sudo ./deploy.sh"

@@ -1,0 +1,24 @@
+# Quadlet unit (rootful): /etc/containers/systemd/thingino-caddy.container
+# @DIR@ is substituted with the repo path by deploy.sh.
+[Unit]
+Description=Thingino web-builder — Caddy TLS edge
+Requires=thingino-broker.service
+After=thingino-broker.service network-online.target
+Wants=network-online.target
+
+[Container]
+Image=docker.io/library/caddy:2
+# Host networking: binds host 80/443 directly and sees the real client IP (v4 & v6).
+# Rootful, so privileged ports need nothing extra.
+Network=host
+EnvironmentFile=@DIR@/.env
+Volume=@DIR@/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+Volume=@DIR@/certs:/certs:ro,Z
+Volume=thingino-caddy-data:/data
+Volume=thingino-caddy-config:/config
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
