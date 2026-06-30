@@ -121,6 +121,9 @@ curl -s localhost:8787/api/defconfigs | head
   it done, show the download) and dispatching a **queued** build once a slot frees.
   Each of those can lag ≤1 min — invisible against a 20–40 min build. (A Durable
   Object alarm could do it faster if ever needed.)
-- Rate-limit checks are count-then-insert on D1 (no single-mutex), so a burst can
-  exceed a cap by 1–2. A Durable Object would give strict caps.
+- The build-count caps are enforced by a single atomic `INSERT … SELECT WHERE
+  count < cap`, so a concurrent burst can't slip past them; a per-IP **request**
+  flood (in front of the D1 work) is capped by a **Durable Object** limiter
+  (strongly consistent, free-tier — the Workers Rate Limiting binding is a verified
+  no-op on free, so it's not used).
 - No container to self-update — "update" is `git push` (CI runs `wrangler deploy`).
