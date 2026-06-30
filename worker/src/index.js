@@ -45,7 +45,7 @@ const assetUrl = (env, id) =>
 function cors(env) {
   return {
     "Access-Control-Allow-Origin": env.ALLOW_ORIGIN || "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "content-type,x-builder-uid,authorization",
     "Vary": "Origin",
   };
@@ -566,11 +566,11 @@ async function handleAdminInvite(request, env) {
   if (!/^[a-z0-9_.-]{3,32}$/.test(u)) return json({ error: "username must be 3-32 chars: a-z 0-9 . _ -" }, 400, env);
   if (await env.DB.prepare("SELECT username FROM admins WHERE username=?").bind(u).first())
     return json({ error: "that username already exists" }, 409, env);
-  const token = randToken(), secret = newTotpSecret(), exp = nowSec() + 48 * 3600;
+  const token = randToken(), secret = newTotpSecret(), exp = nowSec() + 60 * 60;
   await env.DB.prepare("INSERT INTO admins(username,totp_secret,invite_token,invite_expires,created_ts,created_by) VALUES(?,?,?,?,?,?)")
     .bind(u, secret, token, exp, nowSec(), "master").run();
   await logEvent(env, "admin_user_invited", null, null, null, `invited ${u}`);
-  return json({ ok: true, username: u, invite_token: token, expires_in: 48 * 3600 }, 200, env);
+  return json({ ok: true, username: u, invite_token: token, expires_in: 60 * 60 }, 200, env);
 }
 async function handleAdminListUsers(request, env) {
   if ((await sessionAdmin(request, env)) !== "master") return json({ error: "master token required" }, 403, env);

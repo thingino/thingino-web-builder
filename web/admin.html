@@ -29,11 +29,13 @@
     <div class="card-header"><h2 class="card-title mb-0 fs-5"><i class="bi bi-shield-lock me-1"></i> Admin</h2></div>
     <div class="card-body">
       <p class="small muted" id="gate-hint">Sign in with your admin username, password, and 6-digit code.</p>
-      <input id="username" class="form-control mb-2" placeholder="Username" autocomplete="username">
-      <input id="password" type="password" class="form-control mb-2" placeholder="Password" autocomplete="current-password">
-      <input id="token" type="password" class="form-control mb-2" placeholder="Master token" autocomplete="off" style="display:none">
-      <input id="totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off" required>
-      <button id="login" class="btn btn-thingino w-100">Sign in</button>
+      <form onsubmit="return false">
+        <input id="username" class="form-control mb-2" placeholder="Username" autocomplete="username">
+        <input id="password" type="password" class="form-control mb-2" placeholder="Password" autocomplete="current-password">
+        <input id="token" type="password" class="form-control mb-2" placeholder="Master token" autocomplete="off" style="display:none">
+        <input id="totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off" required>
+        <button id="login" type="button" class="btn btn-thingino w-100">Sign in</button>
+      </form>
       <div class="text-danger small mt-2" id="gate-err"></div>
       <a href="#" id="master-toggle" class="small muted d-block mt-2">Use master token instead</a>
     </div>
@@ -50,10 +52,12 @@
       <p class="small muted">…or enter this key manually: <code id="enroll-secret" style="word-break:break-all"></code></p>
       <hr>
       <p class="small mb-1"><strong>2.</strong> Set a password (min 10 chars) and enter a 6-digit code to confirm:</p>
-      <input id="enroll-pw" type="password" class="form-control mb-2" placeholder="New password" autocomplete="new-password">
-      <input id="enroll-pw2" type="password" class="form-control mb-2" placeholder="Confirm password" autocomplete="new-password">
-      <input id="enroll-totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off">
-      <button id="enroll-btn" class="btn btn-thingino w-100">Set up account</button>
+      <form onsubmit="return false">
+        <input id="enroll-pw" type="password" class="form-control mb-2" placeholder="New password" autocomplete="new-password">
+        <input id="enroll-pw2" type="password" class="form-control mb-2" placeholder="Confirm password" autocomplete="new-password">
+        <input id="enroll-totp" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="off">
+        <button id="enroll-btn" type="button" class="btn btn-thingino w-100">Set up account</button>
+      </form>
       <div class="small mt-2" id="enroll-msg"></div>
     </div>
   </div>
@@ -241,7 +245,7 @@ async function invite(){
   const r=await fetch(API+'/api/admin/users',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({username:u})});
   const d=await r.json().catch(()=>({}));
   if(r.ok&&d.invite_token){ const link=location.origin+location.pathname+'?invite='+d.invite_token;
-    $('invite-link').innerHTML=`Invite for <code>${esc(d.username)}</code> (valid 48h) — send them this private link:<br><code style="word-break:break-all">${esc(link)}</code> <button class="btn btn-sm btn-outline-secondary ms-1" id="copy-invite">copy</button>`;
+    $('invite-link').innerHTML=`Invite for <code>${esc(d.username)}</code> (valid 60 min) — send them this private link:<br><code style="word-break:break-all">${esc(link)}</code> <button class="btn btn-sm btn-outline-secondary ms-1" id="copy-invite">copy</button>`;
     $('invite-user').value=''; renderUsers();
     const cb=$('copy-invite'); if(cb) cb.onclick=()=>{ navigator.clipboard.writeText(link).then(()=>{cb.textContent='copied';}); };
   } else $('invite-link').innerHTML=`<span class="text-danger">${esc(d.error||'failed')}</span>`;

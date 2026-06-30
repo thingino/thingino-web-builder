@@ -87,7 +87,7 @@ no redeploy) with usage shown, **clear logs**, **reset limits**, cancel any buil
 remove a finished build's artifact + run early, live stats / recent builds + events.
 
 **User management** (master only): invite a username → you get a one-time link
-(48 h). The new admin opens it, scans the **QR** into their authenticator, sets
+(60 min). The new admin opens it, scans the **QR** into their authenticator, sets
 their own password, and is enrolled — the master never sees their password. Admins
 can be listed and removed (removal also kills their sessions). Sessions carry the
 identity, so the audit log records **who** did each action.
