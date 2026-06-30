@@ -42,7 +42,7 @@ function cors(env) {
   return {
     "Access-Control-Allow-Origin": env.ALLOW_ORIGIN || "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "content-type,x-builder-uid",
+    "Access-Control-Allow-Headers": "content-type,x-builder-uid,authorization",
     "Vary": "Origin",
   };
 }
@@ -156,7 +156,7 @@ async function handleStats(request, env) {
     max_concurrent: cfg.maxConcurrent,
     builds_enabled: (await getSetting(env, "builds_enabled")) !== "0",
     commit,
-    version: "worker-poc",
+    version: env.VERSION || "v0.1.0",
     uid,
   }, 200, env);
 }
@@ -169,7 +169,10 @@ async function handleBuild(request, env) {
 
   const uid = resolveUid(request);
   const ip = ipBucket(request.headers.get("CF-Connecting-IP"));
-  const ts = nowSec(), cutoff = ts - WINDOW, cfg = limits(env);
+  const ts = nowSec(), cfg = limits(env);
+  // Hourly window, but never count builds from before an admin "reset limits".
+  const resetTs = parseInt((await getSetting(env, "limits_reset_ts")) || "0", 10);
+  const cutoff = Math.max(ts - WINDOW, resetTs);
 
   if ((await getSetting(env, "builds_enabled")) === "0")
     return json({ error: "builds are temporarily disabled" }, 503, env);
@@ -399,6 +402,134 @@ async function schedulerStep(env) {
   await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(ts - 30 * DAY).run();
 }
 
+// ---- admin (TOTP 2FA + sessions in D1) ------------------------------------
+function ctEq(a, b) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+function base32Decode(s) {
+  const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0, val = 0;
+  const out = [];
+  for (const ch of s.trim().toUpperCase()) {
+    if (ch === "=" || ch === " ") continue;
+    const i = A.indexOf(ch);
+    if (i < 0) return null;
+    val = (val << 5) | i;
+    bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((val >> bits) & 0xff); }
+  }
+  return new Uint8Array(out);
+}
+async function hotp(secret, counter) {
+  const key = await crypto.subtle.importKey("raw", secret, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const buf = new ArrayBuffer(8);
+  const dv = new DataView(buf);
+  dv.setUint32(0, Math.floor(counter / 2 ** 32));
+  dv.setUint32(4, counter >>> 0);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, buf));
+  const off = mac[19] & 0x0f;
+  const bin = ((mac[off] & 0x7f) << 24) | (mac[off + 1] << 16) | (mac[off + 2] << 8) | mac[off + 3];
+  return bin % 1000000;
+}
+async function totpCheck(secretB32, code) {
+  if (!/^[0-9]{6}$/.test(code)) return false;
+  const secret = base32Decode(secretB32);
+  if (!secret) return false;
+  const want = parseInt(code, 10);
+  const step = Math.floor(Date.now() / 1000 / 30);
+  for (const c of [step - 1, step, step + 1]) if ((await hotp(secret, c)) === want) return true;
+  return false;
+}
+const bearer = (request) => {
+  const a = request.headers.get("authorization") || "";
+  return a.startsWith("Bearer ") ? a.slice(7) : "";
+};
+async function sessionOk(request, env) {
+  const tok = bearer(request);
+  if (!tok) return false;
+  const t = nowSec();
+  await env.DB.prepare("DELETE FROM sessions WHERE expires <= ?").bind(t).run();
+  const r = await env.DB.prepare("SELECT expires FROM sessions WHERE token=?").bind(tok).first();
+  return !!(r && r.expires > t);
+}
+
+async function handleAdminLogin(request, env) {
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
+  const ip = ipBucket(request.headers.get("CF-Connecting-IP"));
+  const fails = await countQ(env, "SELECT count(*) c FROM events WHERE kind='admin_login_fail' AND ip_bucket=? AND ts > ?", ip, nowSec() - 900);
+  if (fails >= 10) {
+    await logEvent(env, "admin_login_throttled", null, null, ip, "too many failed logins");
+    return json({ error: "too many attempts — try again later" }, 429, env);
+  }
+  if (!env.ADMIN_TOKEN) return json({ error: "admin is disabled" }, 503, env);
+  if (!env.ADMIN_TOTP_SECRET) return json({ error: "admin 2FA is not configured" }, 503, env);
+  const ok = ctEq(String(body.token || ""), env.ADMIN_TOKEN) && (await totpCheck(env.ADMIN_TOTP_SECRET, String(body.totp || "").trim()));
+  if (!ok) {
+    await logEvent(env, "admin_login_fail", null, null, ip, "bad token or 2FA");
+    return json({ error: "invalid credentials" }, 401, env);
+  }
+  const session = uuid(), ttl = 8 * 3600;
+  await env.DB.prepare("INSERT INTO sessions(token,expires) VALUES(?,?)").bind(session, nowSec() + ttl).run();
+  await logEvent(env, "admin_login_ok", null, null, ip, "session created");
+  return json({ session, expires_in: ttl, totp: true }, 200, env);
+}
+async function handleAdminLogout(request, env) {
+  const tok = bearer(request);
+  if (tok) await env.DB.prepare("DELETE FROM sessions WHERE token=?").bind(tok).run();
+  return json({ ok: true }, 200, env);
+}
+async function handleAdminStats(request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  const cfg = limits(env);
+  const counts = {};
+  for (const s of ["queued", "running", "done", "failed", "cancelled", "expired"])
+    counts[s] = await countQ(env, "SELECT count(*) c FROM builds WHERE state=?", s);
+  const avg = await env.DB.prepare("SELECT avg(finished_ts - dispatched_ts) a FROM builds WHERE state='done' AND finished_ts IS NOT NULL AND dispatched_ts IS NOT NULL").first();
+  const builds = ((await env.DB.prepare("SELECT id,defconfig,state,created_ts,dispatched_ts,finished_ts,run_id,cancel_requested,uid,ip_bucket FROM builds ORDER BY created_ts DESC LIMIT 25").all()).results || []).map((b) => ({
+    build_id: b.id, defconfig: b.defconfig,
+    state: b.state === "running" && b.cancel_requested ? "cancelling" : b.state,
+    created_ts: b.created_ts, dispatched_ts: b.dispatched_ts, finished_ts: b.finished_ts, run_id: b.run_id, uid: b.uid, ip: b.ip_bucket,
+  }));
+  const events = ((await env.DB.prepare("SELECT ts,kind,build_id,detail,uid,ip_bucket FROM events ORDER BY id DESC LIMIT 60").all()).results || []).map((e) => ({
+    ts: e.ts, kind: e.kind, build_id: e.build_id, detail: e.detail, uid: e.uid, ip: e.ip_bucket,
+  }));
+  return json({
+    builds_enabled: (await getSetting(env, "builds_enabled")) !== "0",
+    counts,
+    last24h: await countQ(env, "SELECT count(*) c FROM builds WHERE created_ts > ?", nowSec() - DAY),
+    avg_build_secs: avg && avg.a ? Math.round(avg.a) : null,
+    max_concurrent: cfg.maxConcurrent, retention_secs: cfg.retention,
+    recent_builds: builds, recent_events: events,
+    version: env.VERSION || "v0.1.0", latest_version: null, update_available: false,
+  }, 200, env);
+}
+async function handleAdminToggle(request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
+  await setSetting(env, "builds_enabled", body.enabled ? "1" : "0");
+  await logEvent(env, "admin_toggle", null, null, null, `builds_enabled=${!!body.enabled}`);
+  return json({ builds_enabled: !!body.enabled }, 200, env);
+}
+async function handleAdminClearLogs(request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  const r = await env.DB.prepare("DELETE FROM events").run();
+  const n = r.meta?.changes ?? 0;
+  await logEvent(env, "admin_clear_logs", null, null, null, `cleared ${n} events`);
+  return json({ ok: true, cleared: n }, 200, env);
+}
+async function handleAdminResetLimits(request, env) {
+  if (!(await sessionOk(request, env))) return json({ error: "admin auth required" }, 401, env);
+  // Mark "now" so the rate-limit queries ignore every build created before this.
+  await setSetting(env, "limits_reset_ts", String(nowSec()));
+  await logEvent(env, "admin_reset_limits", null, null, null, "hourly limits reset");
+  return json({ ok: true }, 200, env);
+}
+
 // ---- entrypoints ----------------------------------------------------------
 export default {
   async fetch(request, env, _ctx) {
@@ -412,6 +543,12 @@ export default {
       let m;
       if ((m = p.match(/^\/api\/status\/(.+)$/)) && request.method === "GET") return await handleStatus(m[1], env);
       if ((m = p.match(/^\/api\/cancel\/(.+)$/)) && request.method === "POST") return await handleCancel(m[1], request, env);
+      if (p === "/api/admin/login" && request.method === "POST") return await handleAdminLogin(request, env);
+      if (p === "/api/admin/stats" && request.method === "GET") return await handleAdminStats(request, env);
+      if (p === "/api/admin/toggle" && request.method === "POST") return await handleAdminToggle(request, env);
+      if (p === "/api/admin/clear-logs" && request.method === "POST") return await handleAdminClearLogs(request, env);
+      if (p === "/api/admin/reset-limits" && request.method === "POST") return await handleAdminResetLimits(request, env);
+      if (p === "/api/admin/logout" && request.method === "POST") return await handleAdminLogout(request, env);
       return json({ error: "not found" }, 404, env);
     } catch (e) {
       return json({ error: "internal error" }, 500, env);

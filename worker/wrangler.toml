@@ -14,6 +14,7 @@ database_name = "thingino-builder"
 database_id = "5e72dc96-8856-4418-b59f-d872bca8330f"
 
 [vars]
+VERSION = "v0.1.0"
 GITHUB_REPO = "thingino/thingino-web-builder"
 THINGINO_REPO = "themactep/thingino-firmware"
 THINGINO_REF = "master"

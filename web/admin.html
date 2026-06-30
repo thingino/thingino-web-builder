@@ -47,6 +47,8 @@
   <div class="card mb-3"><div class="card-body d-flex align-items-center gap-3 flex-wrap">
     <div>Builds are <span id="kill-state" class="fw-bold">…</span></div>
     <button id="kill-btn" class="btn btn-sm">…</button>
+    <button id="clearlogs-btn" class="btn btn-sm btn-outline-secondary">Clear logs</button>
+    <button id="resetlimits-btn" class="btn btn-sm btn-outline-secondary">Reset limits</button>
     <span class="small muted ms-auto" id="kill-extra"></span>
   </div></div>
 
@@ -126,6 +128,8 @@ async function refresh(){
   $('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 async function toggle(){ await fetch(API+'/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
+async function clearLogs(){ if(!confirm('Delete all audit events?')) return; await fetch(API+'/api/admin/clear-logs',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); refresh(); }
+async function resetLimits(){ if(!confirm('Reset all hourly rate-limit counts?')) return; const r=await fetch(API+'/api/admin/reset-limits',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); if(r.ok) $('kill-extra').textContent='hourly limits reset'; refresh(); }
 async function doUpdate(){
   const v=$('upd-btn').dataset.v||'';
   if(!confirm('Update the builder'+(v?' to '+v:'')+' and restart? In-progress builds keep running on GitHub.')) return;
@@ -140,6 +144,8 @@ $('token').addEventListener('keydown',e=>{ if(e.key==='Enter') $('totp').focus()
 $('totp').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
 $('logout').onclick=logout;
 $('kill-btn').onclick=toggle;
+$('clearlogs-btn').onclick=clearLogs;
+$('resetlimits-btn').onclick=resetLimits;
 $('upd-btn').onclick=doUpdate;
 if(tok()){ adminGet().then(show).catch(()=>sessionStorage.removeItem(TK)); }
 setInterval(()=>{ if($('app').style.display!=='none') refresh(); },5000);
