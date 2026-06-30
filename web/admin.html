@@ -160,7 +160,7 @@ const tfmt=ts=>new Date(ts*1000).toLocaleTimeString();
 const dur=(a,b)=>{ if(!a||!b) return '—'; const s=b-a; return `${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`; };
 const ago=ts=>{ const s=Math.floor(Date.now()/1000)-ts; if(s<60)return s+'s ago'; if(s<3600)return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; };
 const PILL={queued:'bg-info text-dark',running:'bg-primary',cancelling:'bg-warning text-dark',done:'bg-success',failed:'bg-danger',cancelled:'bg-secondary',expired:'bg-dark border'};
-const pill=s=>`<span class="badge ${PILL[s]||'bg-secondary'}">${s}</span>`;
+const pill=s=>`<span class="badge ${PILL[s]||'bg-secondary'}">${esc(s)}</span>`;
 const tile=(l,n)=>`<div class="col-6 col-md-3 col-lg-2"><div class="card text-center h-100"><div class="card-body py-2 px-1"><div class="fs-4 fw-bold">${n??0}</div><div class="small muted text-uppercase">${l}</div></div></div></div>`;
 
 async function adminGet(){ const r=await fetch(API+'/api/admin/stats',{headers:{Authorization:'Bearer '+tok()}}); if(r.status===401) throw 0; return r.json(); }
@@ -268,7 +268,7 @@ async function acceptInvite(token){
   m.className='small mt-2'; m.textContent='setting up…';
   const r=await fetch(API+'/api/admin/accept-invite',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token,password:pw,totp})});
   const d=await r.json().catch(()=>({}));
-  if(r.ok){ m.className='text-success small mt-2'; m.innerHTML='✓ Account ready. <a href="'+location.pathname+'">Sign in →</a>'; $('enroll-btn').disabled=true; }
+  if(r.ok){ m.className='text-success small mt-2'; m.innerHTML='✓ Account ready. <a href="'+esc(location.pathname)+'">Sign in →</a>'; $('enroll-btn').disabled=true; }
   else { m.className='text-danger small mt-2'; m.textContent=d.error||'failed'; }
 }
 $('login').onclick=login;

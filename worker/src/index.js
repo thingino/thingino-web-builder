@@ -243,34 +243,53 @@ async function handleBuild(request, env) {
     return json({ error: "the build queue is full, try again shortly" }, 503, env);
 
   const notCancelledUndispatched = "NOT (state='cancelled' AND dispatched_ts IS NULL)";
-  if ((await countQ(env, `SELECT count(*) c FROM builds WHERE created_ts > ? AND ${notCancelledUndispatched}`, cutoff)) >= cfg.globalHourly) {
-    await logEvent(env, "rate_limited", null, uid, ip, "global hourly limit", rawIp);
-    return json({ error: `the builder is at its hourly limit (${cfg.globalHourly}/hr) — try again later` }, 429, env);
-  }
-  if ((await countQ(env, `SELECT count(*) c FROM builds WHERE uid=? AND created_ts > ? AND ${notCancelledUndispatched}`, uid, cutoff)) >= cfg.userHourly) {
-    await logEvent(env, "rate_limited", null, uid, ip, "per-user hourly limit", rawIp);
-    return json({ error: `you've reached ${cfg.userHourly} builds this hour — try again later` }, 429, env);
-  }
-  if ((await countQ(env, `SELECT count(*) c FROM builds WHERE ip_bucket=? AND created_ts > ? AND ${notCancelledUndispatched}`, ip, cutoff)) >= cfg.ipHourly) {
+  // Atomic rate-limit + insert: the global/user/IP caps are guard subqueries on the
+  // INSERT, so a concurrent burst can't slip past separate check-then-insert reads.
+  const id = uuid();
+  const ins = await env.DB.prepare(
+    `INSERT INTO builds(id,uid,ip_bucket,ip_full,defconfig,state,created_ts,commit_sha)
+     SELECT ?,?,?,?,?,'queued',?,?
+     WHERE (SELECT count(*) FROM builds WHERE created_ts > ? AND ${notCancelledUndispatched}) < ?
+       AND (SELECT count(*) FROM builds WHERE uid=? AND created_ts > ? AND ${notCancelledUndispatched}) < ?
+       AND (SELECT count(*) FROM builds WHERE ip_bucket=? AND created_ts > ? AND ${notCancelledUndispatched}) < ?`
+  ).bind(
+    id, uid, ip, rawIp, defconfig, ts, commit,
+    cutoff, cfg.globalHourly,
+    uid, cutoff, cfg.userHourly,
+    ip, cutoff, cfg.ipHourly,
+  ).run();
+  if ((ins.meta?.changes ?? 0) === 0) {
+    // Capped — re-run the cheap individual counts to pick which 429 message applies.
+    if ((await countQ(env, `SELECT count(*) c FROM builds WHERE created_ts > ? AND ${notCancelledUndispatched}`, cutoff)) >= cfg.globalHourly) {
+      await logEvent(env, "rate_limited", null, uid, ip, "global hourly limit", rawIp);
+      return json({ error: `the builder is at its hourly limit (${cfg.globalHourly}/hr) — try again later` }, 429, env);
+    }
+    if ((await countQ(env, `SELECT count(*) c FROM builds WHERE uid=? AND created_ts > ? AND ${notCancelledUndispatched}`, uid, cutoff)) >= cfg.userHourly) {
+      await logEvent(env, "rate_limited", null, uid, ip, "per-user hourly limit", rawIp);
+      return json({ error: `you've reached ${cfg.userHourly} builds this hour — try again later` }, 429, env);
+    }
     await logEvent(env, "rate_limited", null, uid, ip, "per-ip hourly limit", rawIp);
     return json({ error: "too many builds from your network this hour — try again later" }, 429, env);
   }
-
-  const id = uuid();
-  await env.DB.prepare("INSERT INTO builds(id,uid,ip_bucket,ip_full,defconfig,state,created_ts,commit_sha) VALUES(?,?,?,?,?,'queued',?,?)")
-    .bind(id, uid, ip, rawIp, defconfig, ts, commit).run();
   await logEvent(env, "queued", id, uid, ip, defconfig, rawIp);
 
   // Inline dispatch: if a slot is free, fire the build NOW rather than waiting for
   // the next cron tick. The cron is only a fallback/reconciler for the rest.
   let state = "queued", position = 0;
   if ((await countQ(env, "SELECT count(*) c FROM builds WHERE state='running'")) < cfg.maxConcurrent) {
-    try {
-      await dispatchBuild(env, id, defconfig, commit);
-      await env.DB.prepare("UPDATE builds SET state='running', dispatched_ts=? WHERE id=?").bind(nowSec(), id).run();
-      await logEvent(env, "dispatched", id, uid, ip, defconfig);
-      state = "running";
-    } catch (_) { /* stays queued; the cron retries */ }
+    // Claim-then-act: atomically flip queued→running so the cron can't grab the same
+    // row mid-dispatch. Only dispatch if we won the claim.
+    const claim = await env.DB.prepare("UPDATE builds SET state='running', dispatched_ts=? WHERE id=? AND state='queued'").bind(nowSec(), id).run();
+    if ((claim.meta?.changes ?? 0) === 1) {
+      try {
+        await dispatchBuild(env, id, defconfig, commit);
+        await logEvent(env, "dispatched", id, uid, ip, defconfig);
+        state = "running";
+      } catch (_) {
+        // dispatch failed — release the claim so the cron retries it.
+        await env.DB.prepare("UPDATE builds SET state='queued', dispatched_ts=NULL WHERE id=?").bind(id).run();
+      }
+    }
   }
   if (state === "queued") position = await countQ(env, "SELECT count(*) c FROM builds WHERE state='queued'");
   return json({ build_id: id, defconfig, state, position, status_url: `/api/status/${id}`, download_url: assetUrl(env, id), commit }, 202, env);
@@ -394,7 +413,24 @@ async function deleteReleaseAssets(env, id) {
 }
 
 async function schedulerStep(env) {
-  const ts = nowSec(), cfg = await limits(env);
+  const ts = nowSec();
+  // Advisory D1 lease so overlapping cron ticks don't double-process (best-effort).
+  // The 50s lease auto-expires before the next 1-min tick if a run dies mid-flight.
+  const lock = parseInt((await getSetting(env, "cron_lock")) || "0", 10);
+  if (lock > ts) return;
+  await setSetting(env, "cron_lock", String(ts + 50));
+  try {
+    await schedulerWork(env, ts);
+  } catch (e) {
+    // Surface recurring failures instead of letting waitUntil swallow them silently.
+    console.error("schedulerStep failed:", e);
+    try { await logEvent(env, "cron_error", null, null, null, String((e && e.message) || e)); } catch (_) {}
+  } finally {
+    try { await setSetting(env, "cron_lock", "0"); } catch (_) {}
+  }
+}
+async function schedulerWork(env, ts) {
+  const cfg = await limits(env);
   await resolveThingino(env);
 
   const running = ((await env.DB.prepare("SELECT id,run_id,dispatched_ts,cancel_requested FROM builds WHERE state='running'").all()).results) || [];
@@ -429,6 +465,11 @@ async function schedulerStep(env) {
         const st = m.conclusion === "success" ? "done" : m.conclusion === "cancelled" ? "cancelled" : "failed";
         await env.DB.prepare("UPDATE builds SET state=?, finished_ts=? WHERE id=?").bind(st, ts, b.id).run();
         await logEvent(env, st, b.id, null, null, `run ${m.run_id} ${m.conclusion || "?"}`);
+      } else if (ts - (b.dispatched_ts || ts) > cfg.buildTimeout) {
+        // Run is listed but still in-progress past the timeout — stop it and fail the build.
+        await cancelRun(env, m.run_id);
+        await env.DB.prepare("UPDATE builds SET state='failed', finished_ts=?, run_id=? WHERE id=?").bind(ts, m.run_id, b.id).run();
+        await logEvent(env, "failed", b.id, null, null, `timed out after ${cfg.buildTimeout}s (run cancelled)`);
       }
     } else if (ts - (b.dispatched_ts || ts) > cfg.buildTimeout) {
       await env.DB.prepare("UPDATE builds SET state='failed', finished_ts=? WHERE id=?").bind(ts, b.id).run();
@@ -437,14 +478,16 @@ async function schedulerStep(env) {
   }
 
   for (const q of queued) {
-    const still = await env.DB.prepare("SELECT 1 FROM builds WHERE id=? AND state='queued'").bind(q.id).first();
-    if (!still) continue;
+    // Claim-then-act: atomically flip queued→running so an inline dispatch (or another
+    // overlapping tick) can't grab the same row. Skip if we didn't win the claim.
+    const claim = await env.DB.prepare("UPDATE builds SET state='running', dispatched_ts=? WHERE id=? AND state='queued'").bind(nowSec(), q.id).run();
+    if ((claim.meta?.changes ?? 0) !== 1) continue;
     try {
       await dispatchBuild(env, q.id, q.defconfig, q.commit_sha);
-      await env.DB.prepare("UPDATE builds SET state='running', dispatched_ts=? WHERE id=?").bind(nowSec(), q.id).run();
       await logEvent(env, "dispatched", q.id, null, null, q.defconfig);
     } catch (_) {
-      await env.DB.prepare("UPDATE builds SET attempts=attempts+1 WHERE id=?").bind(q.id).run();
+      // Release the claim back to queued, count the attempt, and fail after 3 tries.
+      await env.DB.prepare("UPDATE builds SET state='queued', dispatched_ts=NULL, attempts=attempts+1 WHERE id=?").bind(q.id).run();
       const at = ((await env.DB.prepare("SELECT attempts FROM builds WHERE id=?").bind(q.id).first()) || { attempts: 0 }).attempts;
       if (at >= 3) {
         await env.DB.prepare("UPDATE builds SET state='failed', finished_ts=? WHERE id=?").bind(nowSec(), q.id).run();
@@ -525,6 +568,9 @@ const newTotpSecret = () => base32Encode(randBytes(20));
 const bytesToB64 = (u8) => btoa(String.fromCharCode(...u8));
 const b64ToBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const PBKDF2_ITERS = 100000;
+// A fixed, well-formed dummy hash ("iters.saltB64.hashB64") to verify against when an
+// admin row is missing/disabled/unenrolled, so login timing can't enumerate usernames.
+const DUMMY_PW_HASH = `${PBKDF2_ITERS}.${bytesToB64(new Uint8Array(16))}.${bytesToB64(new Uint8Array(32))}`;
 async function pbkdf2(password, salt, iters) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: iters, hash: "SHA-256" }, key, 256));
@@ -551,7 +597,9 @@ async function sessionAdmin(request, env) {
   const t = nowSec();
   await env.DB.prepare("DELETE FROM sessions WHERE expires <= ?").bind(t).run();
   const r = await env.DB.prepare("SELECT admin,expires FROM sessions WHERE token=?").bind(tok).first();
-  return r && r.expires > t ? (r.admin || "master") : null;
+  // Fail closed: a null/empty stored admin must NOT default to "master" (master login
+  // sets identity="master" explicitly, so the master path is unaffected).
+  return r && r.expires > t && r.admin ? r.admin : null;
 }
 
 async function handleAdminLogin(request, env) {
@@ -570,9 +618,11 @@ async function handleAdminLogin(request, env) {
     // Named admin: username + password + their own TOTP (all enforced).
     const u = String(body.username).toLowerCase();
     const a = await env.DB.prepare("SELECT pw_hash,totp_secret,disabled FROM admins WHERE username=?").bind(u).first();
-    if (a && !a.disabled && a.pw_hash
-        && (await verifyPassword(String(body.password || ""), a.pw_hash))
-        && (await totpCheck(a.totp_secret, totp))) {
+    // Always pay the PBKDF2 cost — verify against a dummy hash when the user is absent/
+    // disabled/unenrolled — so response time doesn't reveal whether the username exists.
+    const usable = a && !a.disabled && a.pw_hash;
+    const pwOk = await verifyPassword(String(body.password || ""), usable ? a.pw_hash : DUMMY_PW_HASH);
+    if (usable && pwOk && (await totpCheck(a.totp_secret, totp))) {
       identity = u;
       await env.DB.prepare("UPDATE admins SET last_login=? WHERE username=?").bind(nowSec(), u).run();
     }
@@ -581,7 +631,13 @@ async function handleAdminLogin(request, env) {
     if (ctEq(String(body.token || ""), env.ADMIN_TOKEN) && (await totpCheck(env.ADMIN_TOTP_SECRET, totp))) identity = "master";
   }
   if (!identity) {
-    await logEvent(env, "admin_login_fail", null, null, ip, body.username ? `bad login (${String(body.username).toLowerCase()})` : "bad token or 2FA", rawIp);
+    // Sanitize the username before logging so arbitrary text/HTML can't enter events.detail.
+    let failDetail = "bad token or 2FA";
+    if (body.username) {
+      const un = String(body.username).toLowerCase();
+      failDetail = /^[a-z0-9_.-]{1,32}$/.test(un) ? `bad login (${un})` : "bad login (invalid username)";
+    }
+    await logEvent(env, "admin_login_fail", null, null, ip, failDetail, rawIp);
     return json({ error: "invalid credentials" }, 401, env);
   }
   const session = uuid(), ttl = 8 * 3600;
@@ -601,6 +657,7 @@ async function handleAdminInvite(request, env) {
   let body; try { body = await request.json(); } catch { return json({ error: "bad request" }, 400, env); }
   const u = String(body.username || "").toLowerCase().trim();
   if (!/^[a-z0-9_.-]{3,32}$/.test(u)) return json({ error: "username must be 3-32 chars: a-z 0-9 . _ -" }, 400, env);
+  if (u === "master") return json({ error: "reserved username" }, 400, env);
   if (await env.DB.prepare("SELECT username FROM admins WHERE username=?").bind(u).first())
     return json({ error: "that username already exists" }, 409, env);
   const token = randToken(), secret = newTotpSecret(), exp = nowSec() + 60 * 60;
@@ -705,7 +762,9 @@ async function handleAdminToggle(request, env) {
 }
 async function handleAdminClearLogs(request, env) {
   if (!(await sessionAdmin(request, env))) return json({ error: "admin auth required" }, 401, env);
-  const r = await env.DB.prepare("DELETE FROM events").run();
+  // Preserve recent admin_login_fail rows (the 15-min window) so clearing logs can't
+  // wipe the per-IP brute-force throttle that counts them.
+  const r = await env.DB.prepare("DELETE FROM events WHERE NOT (kind='admin_login_fail' AND ts > ?)").bind(nowSec() - 900).run();
   const n = r.meta?.changes ?? 0;
   await logEvent(env, "admin_clear_logs", null, null, null, `cleared ${n} events`);
   return json({ ok: true, cleared: n }, 200, env);
@@ -713,6 +772,15 @@ async function handleAdminClearLogs(request, env) {
 // Delete finished builds (done/failed/cancelled/expired) from the list; never queued/running.
 async function handleAdminClearBuilds(request, env) {
   if (!(await sessionAdmin(request, env))) return json({ error: "admin auth required" }, 401, env);
+  // Reap GitHub artifacts/runs for done/failed rows before deleting them (cancelled/expired
+  // already had theirs removed by cancel or the reaper). Best-effort.
+  const reap = ((await env.DB.prepare("SELECT id,run_id,state FROM builds WHERE state IN ('done','failed')").all()).results) || [];
+  for (const b of reap) {
+    try {
+      if (b.state === "done") await deleteReleaseAssets(env, b.id);
+      if (b.run_id) await deleteRun(env, b.run_id);
+    } catch (_) { /* best-effort */ }
+  }
   const r = await env.DB.prepare("DELETE FROM builds WHERE state IN ('done','failed','cancelled','expired')").run();
   const n = r.meta?.changes ?? 0;
   await logEvent(env, "admin_clear_builds", null, null, null, `cleared ${n} finished builds`);

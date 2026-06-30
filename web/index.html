@@ -103,7 +103,7 @@
 
   function renderGlobal(d){
     curCommit=d.commit||null;
-    $('stats').innerHTML=`<i class="bi bi-hdd-stack me-1"></i><b>${d.running}</b>/${d.max_concurrent} building &nbsp;·&nbsp; <b>${d.queued}</b> queued &nbsp;·&nbsp; typical build <b>${mins(d.avg_build_secs)}</b>`;
+    $('stats').innerHTML=`<i class="bi bi-hdd-stack me-1"></i><b>${esc(d.running)}</b>/${esc(d.max_concurrent)} building &nbsp;·&nbsp; <b>${esc(d.queued)}</b> queued &nbsp;·&nbsp; typical build <b>${mins(d.avg_build_secs)}</b>`;
     const cb=$('commit-badge');
     if(curCommit){ cb.textContent='thingino @ '+curCommit.slice(0,7); cb.classList.remove('d-none'); } else cb.classList.add('d-none');
     if(d.version){ const v=$('version'); if(v) v.textContent=d.version; }
@@ -121,7 +121,7 @@
     const meta=`<div class="small muted mt-2">defconfig <code>${esc(you.defconfig)}</code><br>build id <code>${esc(you.build_id)}</code>${you.deduped?'<br><span class="text-warning">reused an existing identical image</span>':''}</div>`;
     let h='';
     if(you.state==='queued')
-      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Queued</strong> — position ${you.position}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
+      h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Queued</strong> — position ${esc(you.position)}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
     else if(you.state==='running')
       h=`<div class="alert alert-secondary mb-0">${spin()}<strong>Building…</strong> ${fmt(live)}${meta}<div class="mt-2"><button class="btn btn-outline-secondary btn-sm" id="cancel">Cancel</button></div></div>`;
     else if(you.state==='cancelling')

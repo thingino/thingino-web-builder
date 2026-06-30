@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS builds (
 CREATE INDEX IF NOT EXISTS idx_state ON builds(state);
 CREATE INDEX IF NOT EXISTS idx_uid_created ON builds(uid, created_ts);
 CREATE INDEX IF NOT EXISTS idx_ip_created ON builds(ip_bucket, created_ts);
+CREATE INDEX IF NOT EXISTS idx_builds_created ON builds(created_ts);
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS events (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_kind_ip_ts ON events(kind, ip_bucket, ts);
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
