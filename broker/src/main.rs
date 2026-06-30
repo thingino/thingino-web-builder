@@ -1011,9 +1011,10 @@ async fn scheduler_step(st: &AppState) -> anyhow::Result<()> {
             // Stay in 'cancelling' until the run actually stops; only then finalize.
             match matched {
                 Some(r) if r.status == "completed" => {
+                    let _ = delete_run(st, r.run_id).await; // wipe the cancelled run + its logs now, not at retention
                     let conn = st.db.lock().unwrap();
-                    conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2 WHERE id=?1", rusqlite::params![id, now_ts]).ok();
-                    log_event(&conn, "cancelled", Some(id), None, None, "run stopped after cancel");
+                    conn.execute("UPDATE builds SET state='cancelled', finished_ts=?2, run_id=NULL WHERE id=?1", rusqlite::params![id, now_ts]).ok();
+                    log_event(&conn, "cancelled", Some(id), None, None, "run stopped + deleted");
                 }
                 Some(r) => {
                     let _ = cancel_run(st, r.run_id).await; // run still active — (re)request cancellation
