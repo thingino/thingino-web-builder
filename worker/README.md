@@ -17,8 +17,9 @@ too; the cron only reconciles run status and runs the retention reaper.
 Server-issued identity; per-user / per-IP (/64, via `CF-Connecting-IP`) / global
 hourly limits; FIFO queue + concurrency cap; `(defconfig, commit)` dedup;
 `repository_dispatch`; run correlation; cancel; retention reaper + DB pruning;
-audit events; and a full **admin panel** — TOTP 2FA, kill switch, clear logs, reset
-limits, live stats — with sessions in D1.
+audit events; and a full **admin panel** (named admins + master break-glass, all
+2FA-enforced; kill switch, live limit editing, per-build cancel/remove, clear logs,
+live stats) — sessions in D1. See **[Admin](#admin)** below.
 
 **GitHub auth** is dual-mode: if a **GitHub App** is configured (`GITHUB_APP_ID` +
 `GITHUB_APP_INSTALLATION_ID` vars + `GITHUB_APP_PRIVATE_KEY` secret), the Worker
@@ -36,7 +37,7 @@ npm i -g wrangler && wrangler login        # or export CLOUDFLARE_API_TOKEN
 # 1. Create D1, paste the printed database_id into wrangler.toml
 wrangler d1 create thingino-builder
 
-# 2. Apply the schema (builds / events / settings / sessions)
+# 2. Apply the schema (builds / events / settings / sessions / admins)
 wrangler d1 execute thingino-builder --remote --file schema.sql
 
 # 3. Secrets (Cloudflare-side; persist across deploys, never in the repo)

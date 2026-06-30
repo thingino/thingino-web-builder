@@ -27,8 +27,12 @@ sudo ./setup.sh                  # generates ADMIN_TOKEN + ADMIN_TOTP_SECRET, pr
 sudo ./deploy.sh                 # pulls the ghcr image, installs Quadlet units, starts services
 ```
 
-Open `https://<DOMAIN>` — admin at `/admin.html` (token + 6-digit code). Caddy
-fetches a Let's Encrypt cert automatically on first start.
+Open `https://<DOMAIN>` — admin at `/admin.html`. On this (VPS) path, sign in via
+**"Use master token instead"** with `ADMIN_TOKEN` + your 6-digit code. The Rust
+broker implements the core admin (kill switch, self-update, audit, stats); the
+shared `admin.html`'s newer controls — **named admin accounts**, live limit
+editing, per-build cancel/remove — are **Worker-only** (see `worker/README.md`).
+Caddy fetches a Let's Encrypt cert automatically on first start.
 
 The broker image is **built by CI and published to `ghcr.io/thingino/thingino-web-builder`**;
 `deploy.sh` pulls it (no toolchain needed on the box). A **release** is cut by pushing
