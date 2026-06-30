@@ -61,10 +61,13 @@
   <div class="card mb-3"><div class="card-body">
     <div class="d-flex align-items-center gap-2 mb-2">
       <span class="small muted text-uppercase">Limits</span>
-      <button id="limits-save" class="btn btn-sm btn-thingino ms-auto">Save</button>
+      <button id="limits-edit" class="btn btn-sm btn-outline-secondary ms-auto">Edit</button>
+      <button id="limits-save" class="btn btn-sm btn-thingino ms-auto" style="display:none">Save</button>
+      <button id="limits-cancel" class="btn btn-sm btn-outline-secondary" style="display:none">Cancel</button>
       <span class="small muted" id="limits-msg"></span>
     </div>
-    <div class="row g-2">
+    <div id="limits-view" class="small">…</div>
+    <div id="limits-fields" class="row g-2" style="display:none">
       <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-user/hr</label><input id="lim-userHourly" type="number" min="1" class="form-control form-control-sm"></div>
       <div class="col-4 col-md-2"><label class="form-label small muted mb-0">per-IP/hr</label><input id="lim-ipHourly" type="number" min="1" class="form-control form-control-sm"></div>
       <div class="col-4 col-md-2"><label class="form-label small muted mb-0">global/hr</label><input id="lim-globalHourly" type="number" min="1" class="form-control form-control-sm"></div>
@@ -108,7 +111,7 @@ const ipExpanded=new Set();
 const ipcell=(full,bucket)=>{ const f=full||'', b=bucket||full||''; return `<code class="ipc" data-full="${esc(f)}" data-bucket="${esc(b)}" style="cursor:pointer" title="click to toggle /64 subnet">${esc(ipExpanded.has(f)?b:f)}</code>`; };
 function buildAction(b){ const id=esc(b.build_id);
   if(['queued','running','cancelling'].includes(b.state)) return ` <a href="#" class="bact text-danger ms-1" data-act="cancel" data-id="${id}" title="cancel this build">✕</a>`;
-  if(['done','failed','cancelled'].includes(b.state)) return ` <a href="#" class="bact text-secondary small ms-1" data-act="expire" data-id="${id}" title="remove artifact + run now">remove</a>`;
+  if(['done','failed'].includes(b.state)) return ` <a href="#" class="bact text-secondary small ms-1" data-act="expire" data-id="${id}" title="remove artifact + run now">remove</a>`;
   return ''; }
 const tfmt=ts=>new Date(ts*1000).toLocaleTimeString();
 const dur=(a,b)=>{ if(!a||!b) return '—'; const s=b-a; return `${Math.floor(s/60)}m${String(s%60).padStart(2,'0')}s`; };
@@ -153,16 +156,19 @@ async function refresh(){
 async function toggle(){ await fetch(API+'/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
 async function clearLogs(){ if(!confirm('Delete all audit events?')) return; await fetch(API+'/api/admin/clear-logs',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); refresh(); }
 async function resetLimits(){ if(!confirm('Reset all hourly rate-limit counts?')) return; const r=await fetch(API+'/api/admin/reset-limits',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); if(r.ok) $('kill-extra').textContent='hourly limits reset'; refresh(); }
-let limitsInit=false;
-function renderLimits(L){ if(!L||limitsInit) return;
-  $('lim-userHourly').value=L.userHourly; $('lim-ipHourly').value=L.ipHourly; $('lim-globalHourly').value=L.globalHourly;
-  $('lim-maxConcurrent').value=L.maxConcurrent; $('lim-maxQueue').value=L.maxQueue; $('lim-retention').value=Math.round(L.retention/60);
-  limitsInit=true; }
-async function saveLimits(){
-  const v=id=>parseInt($(id).value,10);
+let lastLimits=null, editingLimits=false;
+const fmtLimits=L=>`<code>${L.userHourly}</code> /user·hr · <code>${L.ipHourly}</code> /IP·hr · <code>${L.globalHourly}</code> /hr global · <code>${L.maxConcurrent}</code> concurrent · queue <code>${L.maxQueue}</code> · retention <code>${Math.round(L.retention/60)}</code> min`;
+function renderLimits(L){ if(!L) return; lastLimits=L; if(!editingLimits) $('limits-view').innerHTML=fmtLimits(L); }
+function editLimits(){ const L=lastLimits; if(!L) return; editingLimits=true; $('limits-msg').textContent='';
+  $('lim-userHourly').value=L.userHourly; $('lim-ipHourly').value=L.ipHourly; $('lim-globalHourly').value=L.globalHourly; $('lim-maxConcurrent').value=L.maxConcurrent; $('lim-maxQueue').value=L.maxQueue; $('lim-retention').value=Math.round(L.retention/60);
+  $('limits-view').style.display='none'; $('limits-edit').style.display='none'; $('limits-fields').style.display=''; $('limits-save').style.display=''; $('limits-cancel').style.display=''; }
+function viewLimits(){ editingLimits=false;
+  $('limits-view').style.display=''; $('limits-edit').style.display=''; $('limits-fields').style.display='none'; $('limits-save').style.display='none'; $('limits-cancel').style.display='none';
+  if(lastLimits) $('limits-view').innerHTML=fmtLimits(lastLimits); }
+async function saveLimits(){ const v=id=>parseInt($(id).value,10);
   const body={userHourly:v('lim-userHourly'),ipHourly:v('lim-ipHourly'),globalHourly:v('lim-globalHourly'),maxConcurrent:v('lim-maxConcurrent'),maxQueue:v('lim-maxQueue'),retention:Math.max(60,v('lim-retention')*60)};
   $('limits-msg').textContent='saving…';
-  try{ const r=await fetch(API+'/api/admin/limits',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify(body)}); const j=await r.json().catch(()=>({})); $('limits-msg').textContent=r.ok?'saved ✓':(j.error||'failed'); if(r.ok) limitsInit=false; }
+  try{ const r=await fetch(API+'/api/admin/limits',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify(body)}); const j=await r.json().catch(()=>({})); if(r.ok){ if(j.limits) lastLimits=j.limits; $('limits-msg').textContent='saved ✓'; viewLimits(); } else $('limits-msg').textContent=j.error||'failed'; }
   catch{ $('limits-msg').textContent='failed'; }
   refresh(); }
 async function doUpdate(){
@@ -181,7 +187,9 @@ $('logout').onclick=logout;
 $('kill-btn').onclick=toggle;
 $('clearlogs-btn').onclick=clearLogs;
 $('resetlimits-btn').onclick=resetLimits;
+$('limits-edit').onclick=editLimits;
 $('limits-save').onclick=saveLimits;
+$('limits-cancel').onclick=viewLimits;
 $('upd-btn').onclick=doUpdate;
 // Click an IP to toggle between the full address and its /64 (v4 /32) bucket.
 document.addEventListener('click',ev=>{ const c=ev.target.closest('.ipc'); if(!c) return; const f=c.dataset.full; if(ipExpanded.has(f)) ipExpanded.delete(f); else ipExpanded.add(f); c.textContent=ipExpanded.has(f)?c.dataset.bucket:c.dataset.full; });
