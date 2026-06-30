@@ -78,7 +78,9 @@
 </div>
 
 <script src="/vendor/bootstrap.bundle.min.js"></script>
+<script src="/config.js"></script>
 <script>
+const API = window.API_BASE || '';
 const TK='thingino_admin_token';
 const tok=()=>sessionStorage.getItem(TK)||'';
 const $=id=>document.getElementById(id);
@@ -91,16 +93,16 @@ const PILL={queued:'bg-info text-dark',running:'bg-primary',cancelling:'bg-warni
 const pill=s=>`<span class="badge ${PILL[s]||'bg-secondary'}">${s}</span>`;
 const tile=(l,n)=>`<div class="col-6 col-md-3 col-lg-2"><div class="card text-center h-100"><div class="card-body py-2 px-1"><div class="fs-4 fw-bold">${n??0}</div><div class="small muted text-uppercase">${l}</div></div></div></div>`;
 
-async function adminGet(){ const r=await fetch('/api/admin/stats',{headers:{Authorization:'Bearer '+tok()}}); if(r.status===401) throw 0; return r.json(); }
+async function adminGet(){ const r=await fetch(API+'/api/admin/stats',{headers:{Authorization:'Bearer '+tok()}}); if(r.status===401) throw 0; return r.json(); }
 async function login(){
   $('gate-err').textContent='';
-  const r=await fetch('/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:$('token').value.trim(),totp:$('totp').value.trim()})});
+  const r=await fetch(API+'/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:$('token').value.trim(),totp:$('totp').value.trim()})});
   const d=await r.json().catch(()=>({}));
   if(r.ok&&d.session){ sessionStorage.setItem(TK,d.session); show(); }
   else { $('gate-err').textContent=d.error||'Invalid credentials.'; sessionStorage.removeItem(TK); }
 }
 function show(){ $('gate').style.display='none'; $('app').style.display=''; refresh(); }
-async function logout(){ try{ await fetch('/api/admin/logout',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); }catch{} sessionStorage.removeItem(TK); location.reload(); }
+async function logout(){ try{ await fetch(API+'/api/admin/logout',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); }catch{} sessionStorage.removeItem(TK); location.reload(); }
 
 let enabled=true;
 async function refresh(){
@@ -123,12 +125,12 @@ async function refresh(){
   $('events-body').innerHTML=(d.recent_events||[]).map(e=>`<tr><td>${tfmt(e.ts)}</td><td>${esc(e.kind)}</td><td><code>${esc(short(e.build_id))}</code></td><td><code>${esc(short(e.uid))}</code></td><td><code>${esc(e.ip)}</code></td><td class="muted">${esc(e.detail)}</td></tr>`).join('');
   $('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
-async function toggle(){ await fetch('/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
+async function toggle(){ await fetch(API+'/api/admin/toggle',{method:'POST',headers:{Authorization:'Bearer '+tok(),'content-type':'application/json'},body:JSON.stringify({enabled:!enabled})}); refresh(); }
 async function doUpdate(){
   const v=$('upd-btn').dataset.v||'';
   if(!confirm('Update the builder'+(v?' to '+v:'')+' and restart? In-progress builds keep running on GitHub.')) return;
   $('upd-btn').disabled=true; $('upd-extra').textContent='requesting update…';
-  try{ const r=await fetch('/api/admin/update',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); const j=await r.json().catch(()=>({})); $('upd-extra').textContent=r.ok?(j.status||'update requested'):(j.error||'update failed'); }
+  try{ const r=await fetch(API+'/api/admin/update',{method:'POST',headers:{Authorization:'Bearer '+tok()}}); const j=await r.json().catch(()=>({})); $('upd-extra').textContent=r.ok?(j.status||'update requested'):(j.error||'update failed'); }
   catch{ $('upd-extra').textContent='update failed'; }
   $('upd-btn').disabled=false;
 }

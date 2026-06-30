@@ -26,8 +26,10 @@ MAX_QUEUE = "50"
 RETENTION_SECS = "1800"
 FAILED_RETENTION_SECS = "3600"
 BUILD_TIMEOUT_SECS = "5400"
-# Origin allowed to call this Worker (your GitHub Pages site). Use "*" only for testing.
-ALLOW_ORIGIN = "https://thingino.github.io"
+# Origin(s) allowed to call this Worker from a browser. The UI is hosted on GitHub
+# Pages (a different origin), so CORS is required. "*" is fine here: the API is
+# rate-limited and admin needs a session token, so cross-origin calls gain nothing.
+ALLOW_ORIGIN = "*"
 
 # Secret (NOT a var) — set with: wrangler secret put GITHUB_TOKEN
 #   a fine-grained PAT (Contents R/W + Actions R/W) or classic repo+workflow.

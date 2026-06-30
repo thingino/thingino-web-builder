@@ -61,8 +61,10 @@
   </p>
 
   <script src="/vendor/bootstrap.bundle.min.js"></script>
+  <script src="/config.js"></script>
   <script>
   const $=id=>document.getElementById(id);
+  const API = window.API_BASE || '';
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const LS_KEY='thingino_builder_uid', MY_KEY='thingino_my_build';
   const getUid=()=>localStorage.getItem(LS_KEY)||'';
@@ -80,7 +82,7 @@
   async function api(path, opts={}) {
     opts.headers = Object.assign({'X-Builder-Uid':getUid()}, opts.headers||{});
     let r, data=null;
-    try { r = await fetch(path, opts); } catch { return {ok:false,status:0,data:null}; }
+    try { r = await fetch(API + path, opts); } catch { return {ok:false,status:0,data:null}; }
     try { data = await r.json(); } catch {}
     if (data && data.uid) setUid(data.uid);
     return {ok:r.ok, status:r.status, data};
