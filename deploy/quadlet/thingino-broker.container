@@ -10,6 +10,7 @@ Wants=network-online.target
 Image=@IMAGE@
 # Let `podman auto-update` swap in a newer image from the registry (UI-triggered).
 AutoUpdate=registry
+NoNewPrivileges=true
 EnvironmentFile=@DIR@/.env
 Environment=IP_HEADER=X-Real-IP
 Volume=thingino-broker-data:/data:U

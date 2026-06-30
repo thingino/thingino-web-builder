@@ -15,10 +15,11 @@ TAG="${IMAGE_TAG:-latest}"
 echo "==> pulling ${IMAGE}:${TAG}"
 podman pull "${IMAGE}:${TAG}"
 
+DOMAIN="$(sed -n 's/^DOMAIN=//p' .env)"
 echo "==> installing Quadlet units to /etc/containers/systemd"
 install -d /etc/containers/systemd
 for f in deploy/quadlet/*.container; do
-  sed -e "s|@DIR@|$DIR|g" -e "s|@IMAGE@|${IMAGE}:${TAG}|g" "$f" > "/etc/containers/systemd/$(basename "$f")"
+  sed -e "s|@DIR@|$DIR|g" -e "s|@IMAGE@|${IMAGE}:${TAG}|g" -e "s|@DOMAIN@|${DOMAIN}|g" "$f" > "/etc/containers/systemd/$(basename "$f")"
 done
 
 echo "==> installing host update units to /etc/systemd/system"
@@ -32,7 +33,6 @@ systemctl restart thingino-broker.service
 systemctl restart thingino-caddy.service
 systemctl enable --now thingino-broker-update.path
 
-DOMAIN="$(sed -n 's/^DOMAIN=//p' .env)"
 echo
 echo "done -> https://${DOMAIN}    (admin: https://${DOMAIN}/admin.html)"
 echo "logs -> journalctl -u thingino-broker -u thingino-caddy -f"
