@@ -43,7 +43,7 @@
     curCommit=d.commit||null;
     $('stats').innerHTML=`<i class="bi bi-hdd-stack me-1"></i><b>${esc(d.running)}</b>/${esc(d.max_concurrent)} ${I18N.t('stats_building')} &nbsp;·&nbsp; <b>${esc(d.queued)}</b> ${I18N.t('stats_queued')} &nbsp;·&nbsp; ${I18N.t('stats_typical')} <b>${mins(d.avg_build_secs)}</b>`;
     const cb=$('commit-badge');
-    if(curCommit){ cb.textContent=I18N.t('commit_badge_text',{commit:curCommit.slice(0,7)}); cb.href='https://github.com/themactep/thingino-firmware/commit/'+curCommit; cb.classList.remove('d-none'); } else cb.classList.add('d-none');
+    if(curCommit){ cb.textContent=I18N.t('commit_badge_text',{branch:curRef,commit:curCommit.slice(0,7)}); cb.href='https://github.com/themactep/thingino-firmware/commit/'+curCommit; cb.classList.remove('d-none'); } else cb.classList.add('d-none');
     if(d.version){ const v=$('version'); if(v) v.textContent=d.version; }
     const b=$('banner');
     if(d.builds_enabled===false){ b.innerHTML='<i class="bi bi-exclamation-triangle me-1"></i>'+I18N.t('builds_disabled'); b.classList.remove('d-none'); }

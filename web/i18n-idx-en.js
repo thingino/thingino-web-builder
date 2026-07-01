@@ -21,7 +21,7 @@ I18N.add("en", {
   stats_building: "building",
   stats_queued: "queued",
   stats_typical: "typical build",
-  commit_badge_text: "thingino @ {commit}",
+  commit_badge_text: "{branch} @ {commit}",
   builds_disabled: "Builds are temporarily disabled by the admin.",
   meta_defconfig: "defconfig",
   meta_build_id: "build id",

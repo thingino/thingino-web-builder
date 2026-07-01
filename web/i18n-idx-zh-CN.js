@@ -21,7 +21,7 @@ I18N.add("zh-CN", {
   stats_building: "构建中",
   stats_queued: "排队中",
   stats_typical: "典型构建",
-  commit_badge_text: "thingino @ {commit}",
+  commit_badge_text: "{branch} @ {commit}",
   builds_disabled: "管理员已暂时禁用构建。",
   meta_defconfig: "defconfig",
   meta_build_id: "构建 ID",

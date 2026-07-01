@@ -21,7 +21,7 @@ I18N.add("ru", {
   stats_building: "в сборке",
   stats_queued: "в очереди",
   stats_typical: "обычная сборка",
-  commit_badge_text: "thingino @ {commit}",
+  commit_badge_text: "{branch} @ {commit}",
   builds_disabled: "Сборки временно отключены администратором.",
   meta_defconfig: "defconfig",
   meta_build_id: "ID сборки",

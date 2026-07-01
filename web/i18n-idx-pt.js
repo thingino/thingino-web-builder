@@ -21,7 +21,7 @@ I18N.add("pt", {
   stats_building: "compilando",
   stats_queued: "na fila",
   stats_typical: "compilação típica",
-  commit_badge_text: "thingino @ {commit}",
+  commit_badge_text: "{branch} @ {commit}",
   builds_disabled: "As compilações estão temporariamente desativadas pelo admin.",
   meta_defconfig: "defconfig",
   meta_build_id: "id da compilação",
