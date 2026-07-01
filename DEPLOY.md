@@ -1,9 +1,9 @@
 # Deploying the Thingino web-builder (Podman)
 
-Two containers managed by **systemd via Podman Quadlet** — no daemon:
+Two containers managed by **systemd via Podman Quadlet**, no daemon:
 
-- **broker** — the Rust control plane + static UI (this image).
-- **caddy** — TLS termination + reverse proxy, on the **host network** so it binds
+- **broker**: the Rust control plane + static UI (this image).
+- **caddy**: TLS termination + reverse proxy, on the **host network** so it binds
   80/443 directly and sees real client IPs (v4 & v6).
 
 The actual firmware builds run on GitHub Actions, so a tiny VPS is plenty.
@@ -27,16 +27,16 @@ sudo ./setup.sh                  # generates ADMIN_TOKEN + ADMIN_TOTP_SECRET, pr
 sudo ./deploy.sh                 # pulls the ghcr image, installs Quadlet units, starts services
 ```
 
-Open `https://<DOMAIN>` — admin at `/admin.html`. Sign in via **"Use master token
+Open `https://<DOMAIN>` (admin at `/admin.html`). Sign in via **"Use master token
 instead"** with `ADMIN_TOKEN` + your 6-digit code, or as a named admin once you've
-invited some. The Rust broker has the **full admin feature set** — named accounts
+invited some. The Rust broker has the **full admin feature set**: named accounts
 (invite self-enrollment), live limit editing, per-build cancel/remove, clear
-logs/builds — same as the Worker, plus one-click container **self-update**. Caddy
+logs/builds, same as the Worker, plus one-click container **self-update**. Caddy
 fetches a Let's Encrypt cert automatically on first start.
 
 The broker image is **built by CI and published to `ghcr.io/thingino/thingino-web-builder`**;
 `deploy.sh` pulls it (no toolchain needed on the box). A **release** is cut by pushing
-a `v*` tag — the workflow publishes `:vX.Y.Z` + `:latest` + a GitHub Release. Pin a
+a `v*` tag: the workflow publishes `:vX.Y.Z` + `:latest` + a GitHub Release. Pin a
 specific version with `IMAGE_TAG=v1.2.0 sudo ./deploy.sh` (default `latest`).
 
 > Clone to a stable path like `/opt/thingino-web-builder`: the Quadlet units
@@ -58,8 +58,8 @@ also works.
 
 **GitHub App (preferred long-term).** Instead of a token, install a GitHub App on
 the repo (Contents R/W + Actions R/W) and set `GITHUB_APP_ID`,
-`GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_KEY_PATH` (the App's `.pem`) in `.env`
-— the broker mints short-lived installation tokens itself, so nothing long-lived
+`GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_KEY_PATH` (the App's `.pem`) in `.env`:
+the broker mints short-lived installation tokens itself, so nothing long-lived
 sits on the box and there's no annual expiry. Mount the key by uncommenting the
 `Volume` line in `deploy/quadlet/thingino-broker.container` and using
 `GITHUB_APP_KEY_PATH=/app/app-key.pem`.
@@ -74,7 +74,7 @@ sits on the box and there's no annual expiry. Mount the key by uncommenting the
 ## IPv6 & real client IPs
 
 Caddy runs on the host network, so it binds the host's IPv4 **and IPv6** and the
-broker sees the **true client IP** — the per-IP limit buckets IPv6 by /64, IPv4 by
+broker sees the **true client IP**: the per-IP limit buckets IPv6 by /64, IPv4 by
 /32. Just make sure the VPS host has a public IPv6 address.
 
 Rootless instead of rootful? It works, but privileged ports need one of:
@@ -90,7 +90,7 @@ Rootless instead of rootful? It works, but privileged ports need one of:
 - **Restart:** `systemctl restart thingino-broker thingino-caddy`
 - **Admin creds:** `./creds.sh show | rotate-token | rotate-totp` (edits `.env`,
   restarts the broker, which also clears logged-in admin sessions).
-- **Limits / retention / concurrency:** env vars in `.env` (see `.env.example`) —
+- **Limits / retention / concurrency:** env vars in `.env` (see `.env.example`):
   per-user **2/hr**, per-IP **3/hr**, global **20/hr**, **6** concurrent, 30-min
   retention. Change and `sudo ./deploy.sh`.
 - **Data:** builds/events/settings persist in the `thingino-broker-data` volume
