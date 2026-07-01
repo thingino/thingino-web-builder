@@ -1,6 +1,6 @@
 [package]
 name = "thingino-build-broker"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 description = "Thin control plane for the thingino web firmware builder: rate-limits and dispatches GitHub Actions builds."
 
