@@ -48,4 +48,14 @@ I18N.add("ja", {
   branch_label: "ビルドに使用する thingino ブランチ：",
   branch_default: "（デフォルト）",
   branch_note: "ファームウェアのビルド元となる thingino ブランチを変更します。カメラ一覧もそれに合わせて更新されます。",
+  // help balloons
+  help_help: "これらのヘルプヒントの表示・非表示を切り替えます。",
+  help_board: "カメラのモデル名を入力して、ビルドプロファイルを見つけます。",
+  help_build: "選択したカメラのファームウェアをビルドします — GitHub Actions 上で実行、約20–40分。",
+  help_stats: "リアルタイムの状態：実行中のビルド、待機中の件数、標準ビルド時間。",
+  help_commit: "このブランチが指す正確な thingino コミット — クリックすると GitHub で開きます。",
+  help_lang: "インターフェースの言語を切り替えます（ブラウザから自動検出）。",
+  help_settings: "設定 — ビルドに使用する thingino ブランチを選びます。",
+  help_branch: "ビルドする thingino ブランチを選択します：master（デフォルト）、ciao、または stable。カメラ一覧もそれに合わせて更新されます。",
+  setting_help_label: "ヘルプヒントを表示 — 任意のコントロールにカーソルを合わせるとヒントが表示されます（または ? ボタンを使用）。",
 });

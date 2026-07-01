@@ -48,4 +48,14 @@ I18N.add("pt", {
   branch_label: "branch do thingino para compilar:",
   branch_default: "(padrão)",
   branch_note: "Altera a branch do thingino a partir da qual seu firmware é compilado. A lista de câmeras é atualizada de acordo.",
+  // help balloons
+  help_help: "Ativa ou desativa estas dicas de ajuda.",
+  help_board: "Comece a digitar o modelo da sua câmera para encontrar seu perfil de compilação.",
+  help_build: "Compila o firmware da câmera selecionada — roda no GitHub Actions, ~20–40 min.",
+  help_stats: "Status ao vivo: compilações em execução agora, quantas estão na fila e o tempo de compilação típico.",
+  help_commit: "O commit exato do thingino em que esta branch está — clique para abri-lo no GitHub.",
+  help_lang: "Troca o idioma da interface (detectado automaticamente do seu navegador).",
+  help_settings: "Configurações — escolha de qual branch do thingino compilar.",
+  help_branch: "Escolha a branch do thingino a compilar: master (padrão), ciao ou stable. A lista de câmeras é atualizada de acordo.",
+  setting_help_label: "Mostra as dicas de ajuda — passe o cursor sobre qualquer controle para ver uma dica (ou use o botão ?).",
 });

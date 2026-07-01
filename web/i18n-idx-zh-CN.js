@@ -48,4 +48,14 @@ I18N.add("zh-CN", {
   branch_label: "用于构建的 thingino 分支：",
   branch_default: "（默认）",
   branch_note: "更改用于构建固件的 thingino 分支。摄像头列表会相应更新。",
+  // help balloons
+  help_help: "开启或关闭这些帮助提示。",
+  help_board: "开始输入你的摄像头型号，以查找其构建配置。",
+  help_build: "构建所选摄像头的固件 — 在 GitHub Actions 上运行，约 20–40 分钟。",
+  help_stats: "实时状态：当前正在运行的构建、排队数量以及典型构建时间。",
+  help_commit: "该分支所处的确切 thingino 提交 — 点击可在 GitHub 上打开。",
+  help_lang: "切换界面语言（自动从你的浏览器检测）。",
+  help_settings: "设置 — 选择用于构建的 thingino 分支。",
+  help_branch: "选择用于构建的 thingino 分支：master（默认）、ciao 或 stable。摄像头列表会相应更新。",
+  setting_help_label: "显示帮助提示 — 将鼠标悬停在任意控件上即可查看提示（或使用 ? 按钮）。",
 });

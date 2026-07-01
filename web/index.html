@@ -26,6 +26,13 @@
     .btn-thingino:hover, .btn-thingino:focus { background:#ff9e2c; border-color:#ff9e2c; color:#0d1117; }
     .muted { color:#8b949e !important; }
     @media (max-width:576px){ body{ padding:.5rem !important; } }
+    /* Opt-in help balloons (toggled by the ? button / Settings; off by default) */
+    body.help-on [data-help] { cursor: help; }
+    #btn-help.help-active { color:#fff; background-color:#6c757d; border-color:#6c757d; }
+    .help-balloon { position:fixed; z-index:1100; max-width:260px; background:#fffdf0; color:#1a1a1a; border:1px solid #c9bfa0; border-radius:12px; padding:.5rem .7rem; font-size:.8rem; line-height:1.35; box-shadow:0 5px 16px rgba(0,0,0,.28); pointer-events:none; opacity:0; transform:translateY(4px); transition:opacity .12s ease, transform .12s ease; }
+    .help-balloon.show { opacity:1; transform:translateY(0); }
+    .help-balloon::before { content:""; position:absolute; top:-7px; left:18px; width:12px; height:12px; background:#fffdf0; border-left:1px solid #c9bfa0; border-top:1px solid #c9bfa0; transform:rotate(45deg); }
+    .help-balloon.above::before { top:auto; bottom:-7px; border-left:0; border-top:0; border-right:1px solid #c9bfa0; border-bottom:1px solid #c9bfa0; }
   </style>
 </head>
 <body class="p-3">
@@ -36,22 +43,23 @@
           <i class="bi bi-cpu me-1"></i><span class="d-none d-sm-inline" data-i18n="header_full"> Thingino Firmware Builder</span><span class="d-sm-none" data-i18n="header_short"> Thingino Builder</span>
         </h2>
         <div class="ms-auto d-flex align-items-center gap-2">
-          <span id="lang-slot"></span>
-          <a id="commit-badge" class="badge bg-info-subtle text-info border border-info-subtle text-decoration-none d-none" target="_blank" rel="noopener" title="thingino commit being built" data-i18n-title="commit_badge_title"></a>
-          <button id="settings-btn" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Settings" data-i18n-title="gear_title"><i class="bi bi-gear"></i></button>
+          <span id="lang-slot" data-help="help_lang"></span>
+          <a id="commit-badge" class="badge bg-info-subtle text-info border border-info-subtle text-decoration-none d-none" target="_blank" rel="noopener" title="thingino commit being built" data-i18n-title="commit_badge_title" data-help="help_commit"></a>
+          <button id="btn-help" class="btn btn-sm btn-outline-secondary py-0 px-1" data-i18n-title="help_help" data-help="help_help"><i class="bi bi-question-lg"></i></button>
+          <button id="settings-btn" class="btn btn-sm btn-outline-secondary py-0 px-1" title="Settings" data-i18n-title="gear_title" data-help="help_settings"><i class="bi bi-gear"></i></button>
         </div>
       </div>
 
       <div class="card-body">
-        <div id="stats" class="small muted mb-3"><span class="spinner-border spinner-border-sm me-1"></span><span data-i18n="connecting">Connecting…</span></div>
+        <div id="stats" class="small muted mb-3" data-help="help_stats"><span class="spinner-border spinner-border-sm me-1"></span><span data-i18n="connecting">Connecting…</span></div>
         <div id="banner" class="alert alert-warning py-2 small d-none"></div>
 
         <div id="picker">
           <label class="form-label small muted mb-1" for="board" data-i18n="camera_label">Camera defconfig</label>
           <div class="input-group">
-            <input id="board" type="text" list="boards" class="form-control" autocomplete="off" spellcheck="false" placeholder="start typing, e.g. atom_cam2…" data-i18n-ph="board_placeholder">
+            <input id="board" type="text" list="boards" class="form-control" autocomplete="off" spellcheck="false" placeholder="start typing, e.g. atom_cam2…" data-i18n-ph="board_placeholder" data-help="help_board">
             <datalist id="boards"></datalist>
-            <button id="go" class="btn btn-thingino" disabled><i class="bi bi-hammer me-1"></i><span data-i18n="build_btn">Build</span></button>
+            <button id="go" class="btn btn-thingino" disabled data-help="help_build"><i class="bi bi-hammer me-1"></i><span data-i18n="build_btn">Build</span></button>
           </div>
           <div class="form-text muted" id="hint" data-i18n="loading_cameras">Loading camera list…</div>
         </div>
@@ -78,19 +86,20 @@
       </div>
       <div class="card-body">
         <p class="small muted mb-2" data-i18n="branch_label">thingino branch to build from:</p>
-        <div class="form-check">
+        <div class="form-check" data-help="help_branch">
           <input class="form-check-input branch-radio" type="radio" name="branch" id="branch-master" value="master">
           <label class="form-check-label" for="branch-master">master <span class="small muted" data-i18n="branch_default">(default)</span></label>
         </div>
-        <div class="form-check">
+        <div class="form-check" data-help="help_branch">
           <input class="form-check-input branch-radio" type="radio" name="branch" id="branch-ciao" value="ciao">
           <label class="form-check-label" for="branch-ciao">ciao</label>
         </div>
-        <div class="form-check">
+        <div class="form-check" data-help="help_branch">
           <input class="form-check-input branch-radio" type="radio" name="branch" id="branch-stable" value="stable">
           <label class="form-check-label" for="branch-stable">stable</label>
         </div>
         <p class="small muted mt-3 mb-0" data-i18n="branch_note">Changes which thingino branch your firmware is built from. The camera list updates to match.</p>
+        <hr class="my-2"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="setting-help"><label class="form-check-label small" for="setting-help" data-i18n="setting_help_label">Show help hints — hover any control for a tip (or use the ? button)</label></div>
       </div>
     </div>
   </div>

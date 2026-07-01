@@ -48,4 +48,14 @@ I18N.add("fr", {
   branch_label: "branche thingino à partir de laquelle générer :",
   branch_default: "(par défaut)",
   branch_note: "Change la branche thingino à partir de laquelle votre firmware est généré. La liste des caméras est mise à jour en conséquence.",
+  // help balloons
+  help_help: "Affichez ou masquez ces astuces d'aide.",
+  help_board: "Commencez à taper le modèle de votre caméra pour trouver son profil de génération.",
+  help_build: "Générez le firmware de la caméra sélectionnée — s'exécute sur GitHub Actions, ~20–40 min.",
+  help_stats: "Statut en direct : générations en cours, nombre en file d'attente et durée de génération type.",
+  help_commit: "Le commit thingino exact sur lequel se trouve cette branche — cliquez pour l'ouvrir sur GitHub.",
+  help_lang: "Changez la langue de l'interface (détectée automatiquement depuis votre navigateur).",
+  help_settings: "Paramètres — choisissez la branche thingino à partir de laquelle générer.",
+  help_branch: "Choisissez la branche thingino à générer : master (par défaut), ciao ou stable. La liste des caméras est mise à jour en conséquence.",
+  setting_help_label: "Affichez les astuces d'aide — survolez n'importe quel contrôle pour un conseil (ou utilisez le bouton ?).",
 });

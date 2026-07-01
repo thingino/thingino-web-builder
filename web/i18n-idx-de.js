@@ -48,4 +48,14 @@ I18N.add("de", {
   branch_label: "thingino-Branch, aus dem gebaut wird:",
   branch_default: "(Standard)",
   branch_note: "Ändert, aus welchem thingino-Branch deine Firmware gebaut wird. Die Kameraliste wird entsprechend aktualisiert.",
+  // help balloons
+  help_help: "Blende diese Hilfehinweise ein oder aus.",
+  help_board: "Tippe dein Kameramodell ein, um sein Build-Profil zu finden.",
+  help_build: "Erstelle die Firmware der ausgewählten Kamera — läuft auf GitHub Actions, ~20–40 Min.",
+  help_stats: "Live-Status: laufende Builds, wie viele in der Warteschlange stehen und die typische Build-Dauer.",
+  help_commit: "Der genaue thingino-Commit, auf dem dieser Branch steht — zum Öffnen auf GitHub anklicken.",
+  help_lang: "Wechsle die Sprache der Oberfläche (automatisch aus deinem Browser erkannt).",
+  help_settings: "Einstellungen — wähle, aus welchem thingino-Branch gebaut wird.",
+  help_branch: "Wähle den thingino-Branch zum Bauen: master (Standard), ciao oder stable. Die Kameraliste wird entsprechend aktualisiert.",
+  setting_help_label: "Hilfehinweise anzeigen — fahre über ein beliebiges Element für einen Tipp (oder nutze die Schaltfläche ?).",
 });

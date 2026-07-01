@@ -108,6 +108,52 @@
     refresh();
   }
 
+  /* ---- Opt-in help balloons (? button / Settings toggle; off by default) ---- */
+  let helpMode = localStorage.getItem('thingino_help')==='1';
+  let _helpBalloon=null, _helpHover=null;
+
+  function applyHelpMode(){
+    document.body.classList.toggle('help-on', helpMode);
+    const b=$('btn-help'); if(b) b.classList.toggle('help-active', helpMode);
+    const s=$('setting-help'); if(s) s.checked=helpMode;
+    // Suppress native title tooltips while help mode is on so they don't double up
+    // with our balloons; restore them when it's off.
+    const els=document.querySelectorAll('[data-help]');
+    for(let i=0;i<els.length;i++){
+      const el=els[i];
+      if(helpMode && el.hasAttribute('title')){ el.setAttribute('data-saved-title', el.getAttribute('title')); el.removeAttribute('title'); }
+      else if(!helpMode && el.hasAttribute('data-saved-title')){ el.setAttribute('title', el.getAttribute('data-saved-title')); el.removeAttribute('data-saved-title'); }
+    }
+    if(!helpMode) hideHelpBalloon();
+  }
+  function setHelp(on){ helpMode=!!on; localStorage.setItem('thingino_help', helpMode?'1':'0'); applyHelpMode(); }
+
+  function hideHelpBalloon(){ _helpHover=null; if(_helpBalloon) _helpBalloon.classList.remove('show'); }
+  function showHelpBalloon(el){
+    if(!_helpBalloon){ _helpBalloon=document.createElement('div'); _helpBalloon.className='help-balloon'; document.body.appendChild(_helpBalloon); }
+    // data-help holds an i18n key; resolve it (fall back to the raw value).
+    _helpBalloon.textContent = window.I18N ? I18N.t(el.getAttribute('data-help')) : el.getAttribute('data-help');
+    _helpBalloon.classList.add('show');
+    const r=el.getBoundingClientRect();
+    const bw=_helpBalloon.offsetWidth, bh=_helpBalloon.offsetHeight;
+    const left=Math.min(Math.max(8, r.left), window.innerWidth-bw-8);
+    let top=r.bottom+9, above=false;
+    if(top+bh > window.innerHeight-8){ top=r.top-bh-9; above=true; } // flip above if it would overflow
+    if(top<8) top=8;
+    _helpBalloon.classList.toggle('above', above);
+    _helpBalloon.style.left=left+'px';
+    _helpBalloon.style.top=top+'px';
+  }
+  /* Track the topmost helpable element under the cursor; elementFromPoint respects
+   * z-order (a control in the Settings overlay wins) and resolves disabled buttons. */
+  document.addEventListener('mousemove', e=>{
+    if(!helpMode) return;
+    const top=document.elementFromPoint(e.clientX, e.clientY);
+    const el=top&&top.closest ? top.closest('[data-help]') : null;
+    if(el){ if(el!==_helpHover){ _helpHover=el; showHelpBalloon(el); } }
+    else if(_helpHover){ hideHelpBalloon(); }
+  });
+
   $('board').addEventListener('input',validate);
   $('board').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!$('go').disabled) submit(); });
   $('go').addEventListener('click',submit);
@@ -117,8 +163,10 @@
   $('settings-close').addEventListener('click',closeSettings);
   $('settings-overlay').addEventListener('click',e=>{ if(e.target===$('settings-overlay')) closeSettings(); });
   document.querySelectorAll('.branch-radio').forEach(r=>r.addEventListener('change',()=>{ if(r.checked&&REFS.includes(r.value)){ curRef=r.value; localStorage.setItem(REF_KEY,curRef); loadBoards(); refresh(); } }));
-  I18N.apply(); I18N.selector('lang-slot');
-  window.addEventListener('i18nchange',()=>{ I18N.apply(); validate(); renderYou(); refresh(); });
+  $('btn-help').addEventListener('click',()=>setHelp(!helpMode));
+  $('setting-help').addEventListener('change',e=>setHelp(e.target.checked));
+  I18N.apply(); I18N.selector('lang-slot'); applyHelpMode();
+  window.addEventListener('i18nchange',()=>{ I18N.apply(); validate(); renderYou(); refresh(); applyHelpMode(); });
   loadBoards(); refresh();
   setInterval(refresh, 5000);
   setInterval(()=>{ if(you&&you.state==='running') renderYou(); }, 1000);

@@ -48,4 +48,14 @@ I18N.add("en", {
   branch_label: "thingino branch to build from:",
   branch_default: "(default)",
   branch_note: "Changes which thingino branch your firmware is built from. The camera list updates to match.",
+  // help balloons
+  help_help: "Toggle these help hints on or off.",
+  help_board: "Start typing your camera model to find its build profile.",
+  help_build: "Build the selected camera's firmware — runs on GitHub Actions, ~20–40 min.",
+  help_stats: "Live status: builds running now, how many are queued, and the typical build time.",
+  help_commit: "The exact thingino commit this branch is at — click to open it on GitHub.",
+  help_lang: "Switch the interface language (auto-detected from your browser).",
+  help_settings: "Settings — choose which thingino branch to build from.",
+  help_branch: "Pick the thingino branch to build: master (default), ciao, or stable. The camera list updates to match.",
+  setting_help_label: "Show help hints — hover any control for a tip (or use the ? button).",
 });
